@@ -77,6 +77,8 @@ Lectura:
   enrutamiento en ellas**. Es un riesgo registrado (sección 6).
 - **La ventana 0 parece mejor, pero no lo es.** El modelo simulado no lee el historial y el set no tiene preguntas
   de seguimiento, así que su calidad de 100 % no significa nada (sección 7).
+- **El simulado predijo bien el ahorro:** −86.2 % frente a −85.9 % con el modelo real (sección 4). Los montos sí
+  difieren: los tokens reales son unas 2.3 veces las palabras que cuenta el simulado.
 
 ## 4. Muestra con el modelo real (C2, C5)
 
@@ -106,31 +108,60 @@ uv run --env-file .env python scripts/cost_real_sample.py
   - Si la caché no responde, se apaga (`CACHE_TTL_SECONDS=0`) y se actualiza el ADR 0022.
   - Si la calidad baja con el modelo pequeño, se revisa la regla del enrutador antes de aceptar el ahorro.
 
-**Resultado:** pendiente de la corrida. Este apartado se completa con sus números.
+**Resultado** (2026-11-26, 21:08 UTC; `doc/evidence/cost-real-model.md`): código 0, sin problemas.
+
+| Pasada | Calidad | Respuestas 200 | Costo USD | Cambio en costo | Tokens de entrada | Tokens de salida | Llamadas desde la caché | p50 ms | p95 ms |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Línea base: 70B, historial completo, sin caché | 100 % | 8/8 | 0.002646 | — | 5556 | 452 | 0 de 15 | 1707 | 2965 |
+| **Palancas de producción, sin caché** | **100 %** | 8/8 | **0.000374** | **−85.9 %** | 4476 | 449 | 0 de 15 | 687 | 919 |
+| Palancas y caché de 300 s, 1.ª pasada (la llena) | 100 % | 8/8 | 0.000376 | −85.8 % | 4476 | 455 | 0 de 15 | 910 | 999 |
+| **Palancas y caché, 2.ª pasada (repite)** | **100 %** | 8/8 | **0.000000** | **−100 %** | 4476 | 455 | **15 de 15** | **87** | **99** |
+
+Lectura:
+
+- **Ahorro sin degradar.** Las palancas bajan el costo 85.9 % con la misma calidad (100 %): el modelo pequeño
+  responde bien las 8 preguntas del set.
+- **Ventana.** Los tokens de entrada bajan 19.4 % (de 5556 a 4476).
+- **Latencia.** El modelo pequeño también es más rápido:
+  - El p50 baja de 1707 a 687 ms (−60 %).
+  - El p95 baja de 2965 a 919 ms. La línea base no cumple el SLO de 2000 ms; producción, sí.
+- **Caché confirmada.** En la repetición, las 15 llamadas salieron de la caché (`HIT`), con costo 0 y p50 de 87 ms.
+  - La clave por hash del cuerpo funciona aunque cada petición lleve su propio `request_id` en los metadatos.
+  - La 1.ª pasada, que llena la caché, cuesta lo mismo que sin caché. En esta corrida su latencia fue algo mayor
+    (p50 de 910 frente a 687 ms).
+- **Tope de salida.** No se alcanzó: la petición con más salida usó 77 tokens en 2 llamadas, lejos de 300 por
+  llamada. En este set el tope no ahorra ni corta; es una red de seguridad contra respuestas desbocadas.
+- **Formato de Cloudflare confirmado.** Las 32 respuestas fueron 200, con `choices` y `usage`.
+- **Variación a temperatura 0.** Entre la pasada sin caché y la 1.ª con caché, 2 de 8 casos cambiaron sus tokens
+  de salida (por ejemplo, 54 frente a 63). La caché devuelve exactamente la respuesta guardada: durante 5 minutos,
+  la misma pregunta exacta recibe la misma respuesta.
 
 ## 5. Proyección (C5)
 
-Con el costo promedio por petición de la ablación y 1 000 peticiones al día (30 000 al mes). Son tokens contados
-por palabras: la muestra real da los montos absolutos y esta tabla se actualiza con ella.
+Se calcula con el costo promedio por petición de la muestra real (sección 4) y 1 000 peticiones al día (30 000 al
+mes), con los precios confirmados el 2026-11-26.
 
 | Configuración | USD por 1 000 peticiones | USD al mes |
 | --- | --- | --- |
-| Línea base | 0.1417 | 4.25 |
-| Solo ventana | 0.1208 | 3.63 |
-| Solo enrutamiento | 0.0227 | 0.68 |
-| **Producción, sin aciertos de caché** | **0.0195** | **0.58** |
-| Producción con 20 % de aciertos de caché | 0.0156 | 0.47 |
+| Línea base | 0.3308 | 9.92 |
+| **Producción, sin aciertos de caché** | **0.0467** | **1.40** |
+| Producción con 20 % de aciertos de caché | 0.0374 | 1.12 |
+| Producción con todas las llamadas desde la caché (el techo) | 0.0000 | 0.00 |
+
+La ablación con el modelo simulado (sección 3) reparte el ahorro entre las palancas. Sus montos (4.25 y 0.58 USD
+al mes) solo sirven para comparar, porque cuentan palabras en lugar de tokens.
 
 - **Caché:** con una tasa de aciertos `h`, el costo de producción baja a un factor (1 − h), aproximadamente. La
   tasa real se lee en `cache_hit_rate` de `/metrics`.
-- **Asignación gratis:** a este ritmo, producción gasta unos 0.02 USD al día y cabe en las 10 000 neuronas
-  diarias (unos 0.11 USD). La línea base, con 0.14 USD al día, no cabría:
+- **Asignación gratis:** a este ritmo, producción gasta unos 0.05 USD al día y cabe en las 10 000 neuronas
+  diarias (unos 0.11 USD); sin pagar, alcanza hasta unas 2 350 peticiones al día. La línea base, con 0.33 USD al
+  día, no cabría:
 
   | Configuración | Neuronas al día (1 000 peticiones) | USD al mes en Workers Paid, sin contar las 10 000 gratis |
   | --- | --- | --- |
-  | Línea base | ~12 900 | ~0.95 |
-  | Producción | ~1 800 | 0.00 |
-- **Presupuesto por cliente:** 1 USD al día alcanza para unas 51 000 respuestas de producción, o 7 000 de línea
+  | Línea base | ~30 100 | ~6.62 |
+  | Producción | ~4 250 | 0.00 |
+- **Presupuesto por cliente:** 1 USD al día alcanza para unas 21 000 respuestas de producción, o 3 000 de línea
   base. Es un techo contra abuso o errores (OWASP LLM10), no un límite del uso normal; al pasarlo, la API responde
   `429` con `budget_exceeded`.
 
@@ -138,10 +169,10 @@ por palabras: la muestra real da los montos absolutos y esta tabla se actualiza 
 
 | Palanca | Ahorro medido | Riesgo de calidad | Mitigación | Cómo se vigila | ¿Se queda? |
 | --- | --- | --- | --- | --- | --- |
-| 1. Enrutamiento por regla | −84.0 % de costo (simulado) | Una pregunta compleja que no parece compleja va al modelo pequeño y recibe una respuesta pobre | El modelo grande atiende las preguntas largas o con «compara», «resume», «explica», «por qué», «analiza» o «todos». El fallback al otro modelo cubre las caídas (ADR 0018). La muestra real compara 70B contra 8B en el mismo set | `by_route` y `by_model` en `/metrics`; `route` y `model` en las trazas; `verification evaluate` en cada push (trabajo `factory`) | Sí |
-| 2. Ventana de 6 mensajes | −14.7 % de costo y −23.6 % de tokens (simulado); crece con conversaciones largas | El modelo no ve lo que se dijo hace más de 3 turnos | 3 turnos cubren las preguntas de seguimiento normales; la página manda los últimos 20 mensajes y el servidor elige cuántos llegan al modelo; se cambia con `HISTORY_WINDOW` | `input_tokens` por modelo en `/metrics`; tokens por llamada en LangSmith | Sí |
-| 3. Tope de salida de 300 tokens | Solo con el modelo real | Una respuesta larga, como la lista de un departamento grande, se corta y el JSON del protocolo queda incompleto | 300 tokens cubren un empleado o un departamento de este directorio; compliance no deja pasar de 1024 en producción | `output_tokens` por modelo: un promedio cerca de 300 por llamada indica cortes; `errors_by_type` y `stopped_at_step_cap` | Sí |
-| 4. Caché del gateway, 300 s | Solo con el modelo real: una llamada desde la caché cuesta 0 y no espera al modelo | Una respuesta de hasta 5 minutos de antigüedad; una respuesta mala se repite para la misma pregunta exacta | La clave es el hash del cuerpo, que incluye el resultado de la herramienta: si el directorio cambia, la respuesta no sale de la caché. Temperatura 0. Compliance pone un máximo de 900 s. Se apaga con `CACHE_TTL_SECONDS=0` sin desplegar código | `cache_hit_rate` en `/metrics`; `cached_calls` por respuesta y en la traza; registros del AI Gateway | Sí, sujeta a la muestra real |
+| 1. Enrutamiento por regla | −84.0 % de costo (simulado); con la ventana, −85.9 % real con la misma calidad | Una pregunta compleja que no parece compleja va al modelo pequeño y recibe una respuesta pobre | El modelo grande atiende las preguntas largas o con «compara», «resume», «explica», «por qué», «analiza» o «todos». El fallback al otro modelo cubre las caídas (ADR 0018). En la muestra real, el 8B respondió bien las 8 preguntas, igual que el 70B | `by_route` y `by_model` en `/metrics`; `route` y `model` en las trazas; `verification evaluate` en cada push (trabajo `factory`) | Sí |
+| 2. Ventana de 6 mensajes | −14.7 % de costo y −23.6 % de tokens (simulado); −19.4 % de tokens reales; crece con conversaciones largas | El modelo no ve lo que se dijo hace más de 3 turnos | 3 turnos cubren las preguntas de seguimiento normales; la página manda los últimos 20 mensajes y el servidor elige cuántos llegan al modelo; se cambia con `HISTORY_WINDOW` | `input_tokens` por modelo en `/metrics`; tokens por llamada en LangSmith | Sí |
+| 3. Tope de salida de 300 tokens | No ahorra en este set: la salida máxima fue de 77 tokens por petición (muestra real); es una red de seguridad | Una respuesta larga, como la lista de un departamento grande, se corta y el JSON del protocolo queda incompleto | 300 tokens cubren un empleado o un departamento de este directorio; compliance no deja pasar de 1024 en producción | `output_tokens` por modelo: un promedio cerca de 300 por llamada indica cortes; `errors_by_type` y `stopped_at_step_cap` | Sí |
+| 4. Caché del gateway, 300 s | Muestra real: en la repetición, 15 de 15 llamadas desde la caché, costo 0 y p50 de 87 ms (frente a 687 ms) | Una respuesta de hasta 5 minutos de antigüedad; una respuesta mala se repite para la misma pregunta exacta | La clave es el hash del cuerpo, que incluye el resultado de la herramienta: si el directorio cambia, la respuesta no sale de la caché. Temperatura 0. Compliance pone un máximo de 900 s. Se apaga con `CACHE_TTL_SECONDS=0` sin desplegar código | `cache_hit_rate` en `/metrics`; `cached_calls` por respuesta y en la traza; registros del AI Gateway | Sí; confirmada en la muestra real |
 | 5. Presupuesto diario por cliente, 1 USD | No ahorra: pone un techo | Un cliente legítimo con mucho uso recibe `429` hasta el día siguiente | Se sube con `CLIENT_DAILY_BUDGET_USD`; `Retry-After` dice cuándo volver | `by_client.*.cost_usd` y `budget_exceeded` en `/metrics`; auditoría `budget_exceeded` en el log | Sí |
 
 ## 7. La palanca que no aceptaría

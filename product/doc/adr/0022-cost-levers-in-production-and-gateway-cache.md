@@ -94,5 +94,6 @@ calidad y 86.2 % menos costo. Para producción faltaba:
   revisada el 2026-11-26: la caché está apagada por omisión en el gateway y una petición entra con
   `cf-aig-cache-key`. La TTL va de 60 s a un mes. `cf-aig-metadata` acepta hasta 5 entradas y el producto manda
   una.
-- La muestra real confirma el `HIT`. Si no llega, la palanca se apaga (`CACHE_TTL_SECONDS=0`) y este ADR se
-  actualiza.
+- La muestra real del 2026-11-26 confirmó el `HIT`: en la repetición, 15 de 15 llamadas salieron de la caché, con
+  costo 0 y p50 de 87 ms (`doc/evidence/cost-real-model.md`). Las palancas bajaron el costo 85.9 % con la misma
+  calidad (`doc/cost-analysis.md` §4).

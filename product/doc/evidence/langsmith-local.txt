@@ -1,12 +1,12 @@
-# Trazas reales en LangSmith, equipo local (2026-11-26 19:33 UTC)
-# Proyecto: m4-hr-assistant-dev · modelo: fake
+# Trazas reales en LangSmith, equipo local (2026-11-26 21:09 UTC)
+# Proyecto: m4-hr-assistant-dev · modelo: gateway
 # Privacidad de las trazas: entradas redact, salidas redact
 # Para cada fila: LangSmith > proyecto > Runs > filtro Metadata
 # request_id = <id>.
 # La traza raíz es «ask»; debajo, agent_run → model → herramienta → model.
 
 caso | código | request_id | modelo | ruta | costo USD | herramientas
-simple | 200 | 1b6e8e2a-2129-4fcb-a0f8-c8b40f1832e5 | @cf/meta/llama-3.1-8b-instruct-fast | simple | 1.455e-05 | get_employee
-complex | 200 | 327fe95b-2f1e-4af9-95d5-be823cc78b7c | @cf/meta/llama-3.3-70b-instruct-fp8-fast | keyword:compara | 0.00016208 | search_by_department
-personal_data | 200 | 309e935c-72b6-4e2f-897d-4eef5853aade | @cf/meta/llama-3.1-8b-instruct-fast | simple | 1.448e-05 | get_employee
-injection | 400 | db92d3f2-dbe4-4e0e-9212-a2626794d170 | - | - | 0.0 | -
+simple | 200 | b212bcb8-ba97-4b61-96e3-747057e76e6c | @cf/meta/llama-3.1-8b-instruct-fast | simple | 7.572e-05 | get_employee
+complex | 200 | 2eb2d908-cf10-4246-acb2-8019568d1d5c | @cf/meta/llama-3.3-70b-instruct-fp8-fast | keyword:compara | 0.00040514 | search_by_department,get_employee,get_employee
+personal_data | 200 | 0ff8fe07-364b-42c3-94aa-a644cf900b0d | @cf/meta/llama-3.1-8b-instruct-fast | simple | 4.3e-05 | get_employee
+injection | 400 | 803d54ed-2f7a-42bc-b6dc-002953f87726 | - | - | 0.0 | -

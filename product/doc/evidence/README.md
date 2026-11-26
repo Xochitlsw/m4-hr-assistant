@@ -13,11 +13,11 @@ sintéticos, y las claves que aparecen son valores de ejemplo de las pruebas.
 | [`security-check.txt`](security-check.txt) | 13 de 13 ataques con el resultado esperado (sin clave, inyección, secreto, CURP, cuerpo de más, cabeceras...) y sus líneas de auditoría sin clave ni IP | Seguridad | `uv run python scripts/security_check.py <url>` |
 | [`metrics-sample.json`](metrics-sample.json) | `/metrics` con desgloses por código, modelo, ruta y cliente, seguridad y negocio, tras 6 peticiones conocidas | Observabilidad | `uv run python scripts/observability_demo.py <url>` |
 | [`logs-request-sample.jsonl`](logs-request-sample.jsonl) | Las líneas del log de una petición de esa mezcla, unidas por su `request_id` | Observabilidad | Salida del servidor filtrada por el `request_id` |
-| [`langsmith-local.txt`](langsmith-local.txt) | Cuatro preguntas con LangSmith encendido: `request_id`, modelo, ruta y costo para buscar cada traza | Observabilidad | `uv run --env-file .env python scripts/trace_demo.py` |
-| [`logs-request-local.jsonl`](logs-request-local.jsonl) | El log de la pregunta simple de esa corrida | Observabilidad | Lo escribe `trace_demo.py` |
+| [`langsmith-local.txt`](langsmith-local.txt) | Modelo real, 2026-11-26: cuatro preguntas con LangSmith encendido (simple al 8B, compleja al 70B, CURP sintética redactada, inyección `400`), con `request_id`, modelo, ruta y costo para buscar cada traza | Observabilidad | `uv run --env-file .env python scripts/trace_demo.py` |
+| [`logs-request-local.jsonl`](logs-request-local.jsonl) | El log de la pregunta simple de esa corrida (`tool_call`, `agent_run` y `request`), sin texto | Observabilidad | Lo escribe `trace_demo.py` |
 | [`evaluate-output.txt`](evaluate-output.txt) | Línea base contra producción con el modelo simulado: misma calidad, 86.2 % menos costo | Costos | `uv run python -m verification evaluate` (desde la raíz) |
 | [`cost-ablation.md`](cost-ablation.md) | Ahorro de cada palanca por separado, las descartadas y la proyección | Costos | `uv run python scripts/cost_ablation.py` |
-| [`cost-real-model.md`](cost-real-model.md) | Línea base, palancas y caché con el modelo real: calidad, costo, tokens, `HIT` y latencia | Costos | `uv run --env-file .env python scripts/cost_real_sample.py` |
+| [`cost-real-model.md`](cost-real-model.md) | Modelo real, 2026-11-26: línea base contra palancas, −85.9 % de costo con calidad de 100 %; en la repetición, 15 de 15 llamadas desde la caché con costo 0 y p50 de 87 ms; proyección mensual | Costos | `uv run --env-file .env python scripts/cost_real_sample.py` |
 
 ## Contra Render (fase final)
 

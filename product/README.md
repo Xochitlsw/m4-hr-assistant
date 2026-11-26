@@ -36,7 +36,8 @@ flowchart LR
 - **Rastreable**: `request_id` en todo, log JSON con auditoría, `/metrics` y `/dashboard`, y un árbol de trazas
   por pregunta en LangSmith.
 - **Con costo medido**: cada respuesta dice qué modelo usó, por qué y cuánto costó. Cuatro palancas de costo
-  están medidas contra una línea base: con el modelo simulado, 86.2 % menos costo con la misma calidad.
+  están medidas contra una línea base: con el modelo real, 85.9 % menos costo con la misma calidad, y costo 0 en
+  lo que contesta la caché.
 - **Seguro en capas**: 21 controles con su riesgo de OWASP LLM 2025, su prueba y su evidencia.
 - **Listo para producción**: compliance como código, resiliencia del modelo, contenedor sin privilegios, CI con
   seis trabajos y Blueprint de Render que publica solo con el CI en verde.
@@ -258,9 +259,19 @@ un UUID.
 | 4. Caché | Con TTL > 0 se mandan `cf-aig-cache-ttl` y `cf-aig-cache-key` (hash del cuerpo, sin el `request_id`); con 0, `cf-aig-skip-cache`. Si el gateway responde `cf-aig-cache-status: HIT`, la llamada no cuesta | `CACHE_TTL_SECONDS` |
 
 En producción (`render.yaml`, ADR 0022) están activas las cuatro: `ROUTING=true`, `HISTORY_WINDOW=6`,
-`MODEL_MAX_TOKENS=300` y `CACHE_TTL_SECONDS=300`, más el presupuesto diario por cliente. Con el modelo simulado,
-la configuración de producción cuesta 86.2 % menos que la línea base con la misma calidad. Ablación por palanca,
-proyección mensual, trade-offs y la muestra con el modelo real: [`doc/cost-analysis.md`](doc/cost-analysis.md).
+`MODEL_MAX_TOKENS=300` y `CACHE_TTL_SECONDS=300`, más el presupuesto diario por cliente.
+
+Resultados medidos:
+
+- **Con el modelo real** ([`doc/evidence/cost-real-model.md`](doc/evidence/cost-real-model.md), 8 preguntas):
+  - Producción cuesta 85.9 % menos que la línea base (0.002646 → 0.000374 USD) con la misma calidad (100 %).
+  - Baja la latencia p50 de 1707 a 687 ms.
+  - Una pregunta repetida sale de la caché con costo 0 y p50 de 87 ms.
+  - Con 1 000 preguntas al día son 1.40 USD al mes frente a 9.92, dentro de la asignación gratis de Workers AI.
+- **Con el modelo simulado:** `verification evaluate` da −86.2 %.
+
+Ablación por palanca, proyección, trade-offs y la palanca que no se acepta:
+[`doc/cost-analysis.md`](doc/cost-analysis.md).
 
 ```powershell
 uv run python scripts/cost_ablation.py                        # ablación, sin red
@@ -378,6 +389,14 @@ Trazas reales desde tu equipo (desde `product/`, con tus claves en `.env`; el sc
 uv run --env-file .env python scripts/trace_demo.py          # modelo real
 uv run --env-file .env python scripts/trace_demo.py --fake   # modelo simulado
 ```
+
+La corrida con el modelo real del 2026-11-26 está en
+[`doc/evidence/langsmith-local.txt`](doc/evidence/langsmith-local.txt). Sus cuatro casos:
+
+- La pregunta simple va al modelo de 8B.
+- La que pide comparar va al de 70B (`keyword:compara`).
+- La pregunta con una CURP sintética responde con el dato redactado en la traza.
+- La inyección responde `400`.
 
 ## Despliegue
 

@@ -7,8 +7,8 @@
 El HR Assistant responde preguntas del personal de Recursos Humanos sobre empleados con un agente que consulta un
 directorio de solo lectura. Para llevarlo a producción, se publicó en Render con un contenedor sin privilegios y un
 CI de seis trabajos que incluye las verificaciones de la fábrica de agentes. También se agregaron trazas en
-LangSmith, métricas, dashboard y runbook; cuatro palancas de costo medidas contra una línea base; y 21 controles de
-seguridad con auditoría. El sistema final es resiliente a fallas del modelo, impide arrancar con una configuración
+LangSmith, métricas, dashboard y runbook; cuatro palancas de costo que, con el modelo real, bajan el costo 85.9 %
+sin bajar la calidad; y 21 controles de seguridad con auditoría. El sistema final es resiliente a fallas del modelo, impide arrancar con una configuración
 insegura y deja cada petición rastreable por su `request_id`.
 
 ## Arquitectura del sistema
@@ -91,8 +91,12 @@ tarda hasta un minuto). `GET /health`, `GET /docs` (Swagger con **Authorize**) y
   - Cada pregunta es un árbol `ask` → `agent_run` → `model` → herramienta → `model`.
   - Los metadatos son `request_id`, `client`, `model`, `route`, `fallback`, `cost_usd` y `cached_calls`, más los
     tokens de cada llamada. El texto va redactado.
-  - Evidencias: `product/doc/evidence/langsmith-local.txt` y las capturas `langsmith-trace.png` y
-    `langsmith-dashboard.png`.
+  - Corrida con el modelo real (2026-11-26, `product/doc/evidence/langsmith-local.txt`):
+    - La pregunta simple va al modelo de 8B.
+    - La que pide comparar va al de 70B y usa tres herramientas.
+    - La que trae una CURP sintética llega redactada a la traza.
+    - La inyección responde `400`.
+  - Capturas: `langsmith-trace.png` y `langsmith-dashboard.png`.
 - **Logs:** una línea JSON por evento con `request_id`, nivel, entorno y versión, y 13 acciones de auditoría. No
   llevan texto de las personas, claves ni IP. La cabecera `X-Request-ID` va en toda respuesta.
 - **Métricas:**
@@ -118,12 +122,24 @@ Con el modelo simulado (`verification evaluate` y `scripts/cost_ablation.py`, mi
 | Solo enrutamiento | 100 % | 0.000181 | 2416 | 84.0 % |
 | Producción (las dos) | 100 % | 0.000156 | 1846 | 86.2 % |
 
-Con el modelo real (`scripts/cost_real_sample.py`): <pendiente de `product/doc/evidence/cost-real-model.md`>.
+Con el modelo real (`scripts/cost_real_sample.py`, 2026-11-26; `product/doc/evidence/cost-real-model.md`), el
+mismo set:
+
+| Configuración | Calidad | Costo (USD) | Tokens de entrada | Ahorro | p50 |
+| --- | --- | --- | --- | --- | --- |
+| Línea base: 70B, historial completo, sin caché | 100 % | 0.002646 | 5556 | — | 1707 ms |
+| Producción, sin caché | 100 % | 0.000374 | 4476 | 85.9 % | 687 ms |
+| Producción, pregunta repetida (15 de 15 llamadas desde la caché) | 100 % | 0.000000 | 4476 | 100 % | 87 ms |
+
+- **El simulado predijo el ahorro:** −86.2 % simulado frente a −85.9 % real.
+- **El tope de 300 tokens no se alcanzó:** la salida máxima fue de 77 tokens por petición. Es una red de
+  seguridad.
 
 Proyección con 1 000 peticiones al día:
 
-- La línea base costaría 4.25 USD al mes; producción, 0.58 USD.
-- Producción cabe en las 10 000 neuronas gratis diarias de Workers AI.
+- La línea base costaría 9.92 USD al mes; producción, 1.40 USD.
+- Producción usa unas 4 250 neuronas al día y cabe en las 10 000 gratis de Workers AI. La línea base necesitaría
+  unas 30 100.
 
 Trade-offs por palanca, la palanca que no se aceptaría aunque bajara el costo (ventana 0) y cómo se vigila el
 costo: `product/doc/cost-analysis.md`.
@@ -195,8 +211,5 @@ mínimo privilegio y rotación de secretos: `product/doc/security.md`.
   `-fp8-fast` al mismo precio; quedó documentado y el consumo real se valida en el panel de Cloudflare.
 - **La red con inspección TLS rechazaba los certificados.** uv y Playwright usan los certificados del sistema;
   nunca se desactivó la verificación TLS.
-
-**Proceso de desarrollo (opcional):** agente de Claude Code dirigido y revisado paso a paso por mí; cada cambio
-pasó las verificaciones de la fábrica antes del commit.
 
 Etiqueta: `Share-OK` (opcional)
