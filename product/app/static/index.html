@@ -57,7 +57,7 @@
     .message.user { align-self: flex-end; background: var(--user); }
     .message.assistant { align-self: flex-start; background: var(--assistant); }
     .message.error { align-self: flex-start; color: var(--error); background: #fdecea; }
-    .tools { margin-top: 6px !important; font-size: 0.85rem; color: var(--muted); }
+    .meta { margin-top: 6px !important; font-size: 0.85rem; color: var(--muted); }
     form { display: flex; gap: 8px; }
     input {
       flex: 1;
@@ -102,19 +102,26 @@
     const send = document.querySelector('[data-testid="send"]');
     const conversation = document.querySelector('[data-testid="answer"]');
 
-    function addMessage(kind, text, tools) {
+    function addLine(item, className, text) {
+      const line = document.createElement("p");
+      line.className = className;
+      line.textContent = text;
+      item.appendChild(line);
+    }
+
+    // supportId es el request_id de la respuesta: con él, soporte encuentra la
+    // petición en el log y en las trazas.
+    function addMessage(kind, text, tools, supportId) {
       const item = document.createElement("div");
       item.className = "message " + kind;
-      const body = document.createElement("p");
-      body.textContent = text;
-      item.appendChild(body);
+      addLine(item, "text", text);
       if (Array.isArray(tools)) {
-        const meta = document.createElement("p");
-        meta.className = "tools";
-        meta.textContent = tools.length
+        addLine(item, "meta", tools.length
           ? "Herramientas usadas: " + tools.join(", ")
-          : "Sin herramientas";
-        item.appendChild(meta);
+          : "Sin herramientas");
+      }
+      if (supportId) {
+        addLine(item, "meta", "Id de soporte: " + supportId);
       }
       conversation.appendChild(item);
       conversation.scrollTop = conversation.scrollHeight;
@@ -122,7 +129,8 @@
 
     function errorText(status) {
       if (status === 422) {
-        return "La pregunta está vacía o es demasiado larga. Revísala e intenta de nuevo.";
+        return "La pregunta está vacía o es demasiado larga. "
+          + "Revísala e intenta de nuevo.";
       }
       return "No pude obtener una respuesta. Intenta de nuevo en un momento.";
     }
@@ -144,11 +152,12 @@
           body: JSON.stringify({ question: text, history: history }),
         });
         if (!response.ok) {
-          addMessage("error", errorText(response.status));
+          const supportId = response.headers.get("X-Request-ID");
+          addMessage("error", errorText(response.status), null, supportId);
           return;
         }
         const data = await response.json();
-        addMessage("assistant", data.answer, data.tools_used);
+        addMessage("assistant", data.answer, data.tools_used, data.request_id);
         history.push({ role: "user", content: text });
         history.push({ role: "assistant", content: data.answer });
       } catch (error) {

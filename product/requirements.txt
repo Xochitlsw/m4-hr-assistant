@@ -3,6 +3,7 @@
 fastapi>=0.115
 uvicorn>=0.30
 pydantic>=2.7
+langsmith>=0.1
 # Pruebas (fastapi.testclient usa httpx)
 httpx>=0.27
 pytest>=8

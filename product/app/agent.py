@@ -4,14 +4,21 @@ En cada paso el modelo pide una herramienta (``{"tool", "args"}``) o responde
 (``{"answer"}``). Solo se ejecutan las herramientas de la lista blanca, con sus
 argumentos validados; una respuesta fuera del protocolo consume un paso y se le
 devuelve al modelo como error.
+
+La corrida, cada llamada al modelo y cada herramienta quedan como trazas cuando el
+contexto de la petición las enciende (``app.tracing``). El agente no sabe de logs ni
+de ``request_id``: avisa de cada herramienta ejecutada con ``on_tool_call``.
 """
 
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from app.directory import EmployeeDirectory
 from app.llm import TOOL_RESULT_PREFIX, ChatModel
+from app.tracing import traced
+
+ToolCallback = Callable[[str, dict], None]
 
 CAP_REACHED = "No pude completar la respuesta. Intenta con una pregunta más concreta."
 SYSTEM_PROMPT = (
@@ -39,6 +46,8 @@ class AgentResult:
     :type input_tokens: int
     :param output_tokens: Tokens de salida sumados de todos los pasos
     :type output_tokens: int
+    :param stopped: Por qué terminó: ``answer`` (respondió) o ``max_steps`` (tope)
+    :type stopped: str
     """
 
     answer: str
@@ -46,6 +55,7 @@ class AgentResult:
     tools_used: list[str]
     input_tokens: int
     output_tokens: int
+    stopped: str
 
 
 class InvalidReply(ValueError):
@@ -64,24 +74,45 @@ class Agent:
     """
 
     def __init__(self, model: ChatModel, directory: EmployeeDirectory, max_steps: int):
-        self._model = model
         self._directory = directory
         self._max_steps = max_steps
+        self._complete = traced("llm", "model", model.complete)
         self._tools = {
-            "get_employee": ("employee_id", self._get_employee),
-            "search_by_department": ("department", self._search_by_department),
+            "get_employee": (
+                "employee_id",
+                traced("tool", "get_employee", self._get_employee),
+            ),
+            "search_by_department": (
+                "department",
+                traced("tool", "search_by_department", self._search_by_department),
+            ),
         }
+        self._traced_run = traced("chain", "agent_run", self._run)
 
-    def run(self, question: str, history: Sequence[dict] = ()) -> AgentResult:
+    def run(
+        self,
+        question: str,
+        history: Sequence[dict] = (),
+        on_tool_call: ToolCallback | None = None,
+    ) -> AgentResult:
         """Responde una pregunta con el historial que manda el cliente.
 
         :param question: Pregunta de la persona
         :type question: str
         :param history: Turnos previos con ``role`` y ``content``
         :type history: Sequence[dict]
-        :return: Respuesta, pasos, herramientas usadas y tokens
+        :param on_tool_call: Se llama con ``(herramienta, argumentos)`` por cada
+            herramienta ejecutada (las rechazadas no cuentan)
+        :type on_tool_call: Callable[[str, dict], None] | None
+        :return: Respuesta, pasos, herramientas usadas, tokens y motivo de parada
         :rtype: AgentResult
         """
+        return self._traced_run(question, list(history), on_tool_call)
+
+    def _run(
+        self, question: str, history: list[dict], on_tool_call: ToolCallback | None
+    ) -> AgentResult:
+        """Bucle con tope; ver :meth:`run`."""
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         messages += [
             {"role": turn["role"], "content": turn["content"]} for turn in history
@@ -90,19 +121,25 @@ class Agent:
         tools_used: list[str] = []
         tokens = [0, 0]
         for step in range(1, self._max_steps + 1):
-            completion = self._model.complete(messages)
+            completion = self._complete(messages)
             tokens[0] += completion.input_tokens
             tokens[1] += completion.output_tokens
-            answer, tool_result = self._handle(completion.text, tools_used)
+            answer, tool_result = self._handle(
+                completion.text, tools_used, on_tool_call
+            )
             if answer is not None:
-                return AgentResult(answer, step, tools_used, *tokens)
+                return AgentResult(answer, step, tools_used, *tokens, "answer")
             messages.append({"role": "assistant", "content": completion.text})
             messages.append(
                 {"role": "user", "content": TOOL_RESULT_PREFIX + tool_result}
             )
-        return AgentResult(CAP_REACHED, self._max_steps, tools_used, *tokens)
+        return AgentResult(
+            CAP_REACHED, self._max_steps, tools_used, *tokens, "max_steps"
+        )
 
-    def _handle(self, text: str, tools_used: list[str]) -> tuple[str | None, str]:
+    def _handle(
+        self, text: str, tools_used: list[str], on_tool_call: ToolCallback | None
+    ) -> tuple[str | None, str]:
         """Interpreta una respuesta del modelo.
 
         :return: ``(respuesta, "")`` si el modelo respondió, o ``(None, resultado)``
@@ -114,10 +151,12 @@ class Agent:
             return None, f"error: {error}"
         if "answer" in reply:
             return reply["answer"], ""
-        name = reply["tool"]
+        name, args = reply["tool"], reply["args"]
         argument_name, tool = self._tools[name]
         tools_used.append(name)
-        return None, tool(reply["args"][argument_name])
+        if on_tool_call is not None:
+            on_tool_call(name, dict(args))
+        return None, tool(args[argument_name])
 
     def _parse(self, text: str) -> dict:
         """Valida que la respuesta cumpla el protocolo y la lista blanca.

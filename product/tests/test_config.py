@@ -30,6 +30,26 @@ def test_invalid_values_stop_the_start_with_a_clear_message():
             load_settings({name: value})
 
 
+def test_observability_defaults_are_safe():
+    observability = load_settings({}).observability
+    assert observability.service_name == "hr-assistant"
+    assert observability.slo_p95_ms == 2000
+    assert observability.tracing_enabled is False
+    assert (observability.hide_inputs, observability.hide_outputs) == (True, True)
+
+
+def test_invalid_observability_values_stop_the_start():
+    invalid = [
+        ("SLO_P95_MS", "0"),
+        ("LANGSMITH_TRACING", "yes"),
+        ("HIDE_INPUTS", "maybe"),
+        ("HIDE_OUTPUTS", ""),
+    ]
+    for name, value in invalid:
+        with pytest.raises(ConfigError, match=name):
+            load_settings({name: value})
+
+
 def test_a_missing_employees_file_stops_the_start(tmp_path):
     settings = load_settings({"EMPLOYEES_PATH": str(tmp_path / "missing.json")})
     with pytest.raises(ConfigError, match="EMPLOYEES_PATH"):

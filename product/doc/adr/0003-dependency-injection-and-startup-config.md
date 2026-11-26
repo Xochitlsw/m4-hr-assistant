@@ -1,6 +1,6 @@
 # 0003 · Inyección de dependencias y configuración validada al arrancar
 
-Fecha: 2026-11-25 · Estado: aceptada · Sesión 1
+Fecha: 2026-11-25 · Estado: aceptada · Sesión 1 (actualizada en la sesión 2)
 
 ## Contexto
 
@@ -16,6 +16,8 @@ desplegar, no con la primera pregunta.
   especificación y lanza `ConfigError` con un mensaje claro ante un valor inválido (por ejemplo
   `AGENT_MAX_STEPS=0`). El proceso no arranca.
 - Un `EMPLOYEES_PATH` relativo se resuelve contra la raíz del producto, no contra el directorio actual.
+- Sesión 2: `create_app()` también recibe el reloj (`Clock`), el logger de eventos y las métricas, con los reales
+  por omisión. Así las pruebas fijan la hora y leen el log sin depender de `stdout` ni del tiempo real.
 
 ## Consecuencias
 

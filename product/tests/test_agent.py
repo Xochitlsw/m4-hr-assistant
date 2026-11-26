@@ -77,3 +77,24 @@ def test_invalid_model_replies_use_a_step_and_are_reported(directory):
     assert (result.answer, result.steps, result.tools_used) == ("listo", 4, [])
     for call in model.calls[1:]:
         assert call[-1]["content"].startswith(PREFIX)
+
+
+def test_the_agent_reports_why_it_stopped(directory):
+    answered = ScriptedModel(json.dumps({"answer": "listo"}))
+    result = Agent(answered, directory, max_steps=1).run("Hola")
+    assert result.stopped == "answer"
+    capped = ScriptedModel(tool_call("get_employee", employee_id="EMP-0004"))
+    result = Agent(capped, directory, max_steps=1).run("¿Quién es EMP-0004?")
+    assert (result.stopped, result.steps) == ("max_steps", 1)
+
+
+def test_each_executed_tool_is_reported_with_its_args(directory):
+    model = ScriptedModel(
+        tool_call("delete_employee", employee_id="EMP-0001"),
+        tool_call("get_employee", employee_id="EMP-0004"),
+        json.dumps({"answer": "listo"}),
+    )
+    reported = []
+    agent = Agent(model, directory, max_steps=3)
+    agent.run("¿Quién es EMP-0004?", on_tool_call=lambda *call: reported.append(call))
+    assert reported == [("get_employee", {"employee_id": "EMP-0004"})]
