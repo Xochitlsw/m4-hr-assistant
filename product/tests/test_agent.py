@@ -136,6 +136,10 @@ def run_collecting(directory, *replies, max_steps=3):
         (tool_call("get_employee", employee_id="EMP-04"), "bad_employee_id"),
         (tool_call("get_employee", employee_id="../EMP-0004"), "bad_employee_id"),
         (
+            tool_call("get_employee", employee_id="EMP-" + chr(0x0664) * 4),
+            "bad_employee_id",
+        ),
+        (
             tool_call("search_by_department", department="Marketing"),
             "unknown_department",
         ),

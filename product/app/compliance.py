@@ -1,4 +1,4 @@
-"""Compliance como código: reglas de producción (ADR 0011).
+"""Compliance como código: reglas de producción (ADR 0011; trazas, ADR 0014).
 
 Con ``ENVIRONMENT=production`` la aplicación no arranca si alguna regla falla. Cada
 regla está en :func:`violations` y su prueba en ``tests/test_compliance.py``; la
@@ -32,10 +32,11 @@ def violations(settings: Settings) -> list[str]:
                 f"{MIN_KEY_LENGTH} characters"
             )
     observability = settings.observability
-    hidden = observability.hide_inputs and observability.hide_outputs
-    if observability.tracing_requested and not hidden:
+    modes = (observability.inputs_privacy, observability.outputs_privacy)
+    if observability.tracing_requested and "clear" in modes:
         found.append(
-            "HIDE_INPUTS and HIDE_OUTPUTS must be true when LANGSMITH_TRACING=true"
+            "HIDE_INPUTS and HIDE_OUTPUTS must be true (hide) or redact, never false, "
+            "when LANGSMITH_TRACING=true"
         )
     return found
 

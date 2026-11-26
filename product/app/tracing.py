@@ -1,9 +1,11 @@
-"""Trazas opcionales en LangSmith (ADR 0006).
+"""Trazas opcionales en LangSmith (ADR 0006 y 0014).
 
 Las trazas se encienden solo con ``LANGSMITH_TRACING=true`` y una clave presente. El
-cliente se crea con ``hide_inputs``/``hide_outputs`` y se pasa en el contexto de cada
-petición, para que ninguna traza use otro cliente. El producto nunca lee el valor de
-la clave: lo toma el cliente de LangSmith del entorno.
+cliente se crea según ``HIDE_INPUTS``/``HIDE_OUTPUTS``: ``true`` oculta esa dirección,
+``redact`` la manda redactada por ``app.privacy`` (como ``anonymizer``) y ``false`` la
+manda en claro (producción no lo acepta). El cliente se pasa en el contexto de cada
+petición, para que ninguna traza use otro. El producto nunca lee el valor de la clave:
+lo toma el cliente de LangSmith del entorno.
 """
 
 from collections.abc import Callable, Iterator
@@ -13,6 +15,7 @@ from typing import Any
 from langsmith import Client, traceable, tracing_context
 
 from app.config import Settings
+from app.privacy import redact_tree
 
 
 class Tracer:
@@ -50,12 +53,15 @@ class Tracer:
         observability = settings.observability
         if not observability.tracing_enabled:
             return cls()
-        return cls(
-            client_factory(
-                hide_inputs=observability.hide_inputs,
-                hide_outputs=observability.hide_outputs,
-            )
-        )
+        options = {
+            "hide_inputs": observability.hide_inputs,
+            "hide_outputs": observability.hide_outputs,
+        }
+        if observability.redacts:
+            # LangSmith aplica el anonymizer al JSON ya serializado de entradas,
+            # salidas, metadatos y errores; lo oculto sigue oculto (ADR 0014).
+            options["anonymizer"] = redact_tree
+        return cls(client_factory(**options))
 
     @contextmanager
     def request(self, request_id: str, **metadata: str) -> Iterator[None]:

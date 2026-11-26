@@ -16,10 +16,12 @@ services:
         value: production
       - key: MODEL_PROVIDER
         value: gateway
+      # Trazas redactadas (ADR 0014): si se encienden, LangSmith recibe el texto con los
+      # datos personales y los secretos reemplazados por [REDACTED:TIPO].
       - key: HIDE_INPUTS
-        value: "true"
+        value: redact
       - key: HIDE_OUTPUTS
-        value: "true"
+        value: redact
       - key: API_KEYS
         sync: false
       - key: CF_ACCOUNT_ID

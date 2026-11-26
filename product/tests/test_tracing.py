@@ -9,9 +9,14 @@ import json
 from langsmith import Client
 
 from app.config import load_settings
+from app.llm import Completion
+from app.privacy import redact_tree
 from app.tracing import Tracer
 
 TRACING_ON = {"LANGSMITH_TRACING": "true", "LANGSMITH_API_KEY": "test-only-key"}
+REDACTED_TRACES = {**TRACING_ON, "HIDE_INPUTS": "redact", "HIDE_OUTPUTS": "redact"}
+CURP = "XAXX010101HDFXXX09"
+EMAIL = "persona.prueba@example.com"
 
 
 class RecordedResponse:
@@ -88,3 +93,41 @@ def test_traced_requests_use_the_hiding_client_and_carry_the_request_id(make_cli
         assert body.get("outputs") in (None, {})
         assert body["extra"]["metadata"]["request_id"] == "demo-123"
         assert body["extra"]["metadata"]["client"] == "tests"
+
+
+class LeakyModel:
+    """Modelo que pide la herramienta y después responde con un dato personal."""
+
+    def __init__(self):
+        self.replies = [
+            json.dumps({"tool": "get_employee", "args": {"employee_id": "EMP-0004"}}),
+            json.dumps({"answer": f"Jorge Díaz; su correo es {EMAIL}"}),
+        ]
+
+    def complete(self, _messages):
+        return Completion(self.replies.pop(0), 1, 1)
+
+
+def test_redacted_traces_use_the_detector_as_anonymizer():
+    recorder = Recorder()
+    mixed = {**TRACING_ON, "HIDE_INPUTS": "true", "HIDE_OUTPUTS": "redact"}
+    Tracer.from_settings(load_settings(REDACTED_TRACES), recorder.client)
+    Tracer.from_settings(load_settings(mixed), recorder.client)
+    assert recorder.options == [
+        {"hide_inputs": False, "hide_outputs": False, "anonymizer": redact_tree},
+        {"hide_inputs": True, "hide_outputs": False, "anonymizer": redact_tree},
+    ]
+
+
+def test_redacted_traces_keep_the_directory_and_drop_personal_data(make_client):
+    recorder = Recorder()
+    tracer = Tracer.from_settings(load_settings(REDACTED_TRACES), recorder.client)
+    api = make_client(tracer=tracer, model=LeakyModel())
+    response = api.post(
+        "/ask", json={"question": f"Mi CURP es {CURP}, ¿quién es EMP-0004?"}
+    )
+    assert response.status_code == 200
+    sent = json.dumps(recorder.bodies, ensure_ascii=False)
+    assert CURP not in sent and EMAIL not in sent
+    for useful in ("EMP-0004", "Jorge Díaz", "[REDACTED:CURP]", "[REDACTED:EMAIL]"):
+        assert useful in sent

@@ -63,3 +63,14 @@ texto. Esta es la única salida de `AskService`: la redacción de datos sensible
   simple de razonar que un texto con entidades.
 - **Rechazar todos los caracteres de formato (categoría `Cf`)**: rompería emojis compuestos y texto legítimo; solo
   se rechazan las marcas bidireccionales.
+
+## Actualización (2026-11-26): caracteres de etiqueta y dígitos ASCII
+
+- Los caracteres de etiqueta Unicode (U+E0000 a U+E007F, categoría `Cf`) pasan a estar prohibidos en la entrada
+  (`422`) y se quitan de la respuesta (`output_sanitized` con `control_chars`). No se ven en pantalla, pero el
+  modelo los lee: sirven para esconder instrucciones. A diferencia del resto de la categoría `Cf`, no tienen uso
+  legítimo en esta API. Los demás caracteres de formato (espacio de ancho cero, unión de palabras para emojis,
+  guion suave, marcas de dirección izquierda y derecha) siguen aceptados; los detectores de datos personales,
+  secretos e inyección los quitan en su copia del texto (`detection_view`, ADR 0014).
+- `employee_id` se valida con `EMP-[0-9]{4}`: en Python, `\d` acepta dígitos de cualquier alfabeto (por ejemplo,
+  los arábigos orientales).

@@ -23,7 +23,8 @@ from app.tracing import traced
 
 ToolCallback = Callable[[str, dict], None]
 InvalidReplyCallback = Callable[[str], None]
-EMPLOYEE_ID_FORMAT = re.compile(r"EMP-\d{4}")
+# [0-9] y no \d: en Python \d acepta dígitos de cualquier alfabeto.
+EMPLOYEE_ID_FORMAT = re.compile(r"EMP-[0-9]{4}")
 
 CAP_REACHED = "No pude completar la respuesta. Intenta con una pregunta más concreta."
 SYSTEM_PROMPT = (

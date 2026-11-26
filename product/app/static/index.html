@@ -171,6 +171,10 @@
         return "La pregunta está vacía, es demasiado larga o tiene caracteres no "
           + "permitidos. Revísala e intenta de nuevo.";
       }
+      if (status === 400) {
+        return "Tu pregunta parece incluir una clave o un secreto. Quítalo y vuelve a "
+          + "preguntar; si era real, cámbialo cuanto antes.";
+      }
       if (status === 413) {
         return "La conversación es demasiado larga. Recarga la página para empezar "
           + "de nuevo.";

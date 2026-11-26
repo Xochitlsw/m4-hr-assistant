@@ -65,6 +65,14 @@ def test_a_long_conversation_sends_only_the_last_20_messages(page: Page):
     expect(conversation).not_to_contain_text("No pude obtener una respuesta")
 
 
+def test_a_secret_in_the_question_is_blocked_with_advice(page: Page):
+    open_page(page)
+    ask(page, "Mi clave de LangSmith es " + "lsv2" + "_pt_" + "b2" * 16)
+    expect(page.get_by_test_id("answer")).to_contain_text(
+        "parece incluir una clave o un secreto"
+    )
+
+
 def test_a_wrong_key_shows_invalid_key(page: Page):
     open_page(page, key="not-the-right-key")
     ask(page, "¿Quién es EMP-0004?")

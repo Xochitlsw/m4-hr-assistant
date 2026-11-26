@@ -25,6 +25,8 @@ Decisiones:
 - [ADR 0011](adr/0011-compliance-as-code.md): compliance como código.
 - [ADR 0012](adr/0012-container-ci-and-render.md): contenedor, CI encadenado y Blueprint de Render.
 - [ADR 0013](adr/0013-input-and-output-validation.md): validación de entradas y de salidas.
+- [ADR 0014](adr/0014-personal-data-secrets-and-redacted-traces.md): datos personales y secretos; trazas
+  redactadas.
 
 ## Componentes
 
@@ -52,7 +54,8 @@ flowchart LR
   logs --> stdout[/"stdout: una línea JSON por evento"/]
   mw -- "latencia · status" --> metrics["Metrics<br/>metrics.py"]
   api -- "tokens · costo" --> metrics
-  agent -. "trazas si hay bandera y clave" .-> tracing["tracing.py"]
+  api -- "pregunta, historial y respuesta" --> privacy["privacy.py<br/>redacta datos personales · 400 si hay un secreto"]
+  agent -. "trazas si hay bandera y clave" .-> tracing["tracing.py<br/>oculta o redacta (privacy.py)"]
   tracing -.-> langsmith[("LangSmith")]
   config["config.py + compliance.py<br/>valida y aplica reglas de producción"] -. "al arrancar" .-> api
 ```
@@ -65,7 +68,8 @@ flowchart LR
 | `app/routing.py` | Regla de enrutamiento (modelo y `route`) y ventana de historial |
 | `app/schemas.py` | Modelos Pydantic de la API: cuerpo de `/ask` con sus límites (largo de la pregunta, mensajes del historial y largo por rol, sin caracteres prohibidos) y `AskResponse` |
 | `app/body_limit.py` | Middleware ASGI: `413` si el cuerpo pasa de `MAX_BODY_BYTES`, por `Content-Length` o contando mientras llega |
-| `app/sanitize.py` | Caracteres prohibidos en la entrada (controles y marcas bidireccionales) y limpieza de la respuesta (controles, HTML, largo) |
+| `app/sanitize.py` | Caracteres prohibidos en la entrada (controles, marcas bidireccionales y etiquetas) y limpieza de la respuesta (controles, HTML, largo); copia normalizada para los detectores (`detection_view`) |
+| `app/privacy.py` | Detector de datos personales y secretos, redacción `[REDACTED:TIPO]`, `SecretFound` (`400`) y `redact_tree` para las trazas |
 | `app/agent.py` | Bucle con tope, protocolo JSON, lista blanca, argumentos validados y normalizados (`EMP-0000`, departamentos de los datos), consumo (`Usage`) y avisos por herramienta y por respuesta rechazada |
 | `app/catalog.py` | Arma el modelo pequeño y el grande (simulados o reales) envueltos en `PricedModel`, y valida sus precios |
 | `app/llm.py` | Interfaz `complete(messages)`, `Completion` y `FakeModel` |
@@ -76,7 +80,7 @@ flowchart LR
 | `app/clock.py` | Reloj inyectable: hora UTC y tiempo monótono para latencias y el límite |
 | `app/logs.py` | Una línea JSON por evento, con candado entre hilos |
 | `app/metrics.py` | Contadores del proceso, percentiles, tokens, costo y SLO, con candado entre hilos |
-| `app/tracing.py` | Enciende o apaga LangSmith y envuelve corrida, modelo y herramientas |
+| `app/tracing.py` | Enciende o apaga LangSmith, oculta o redacta entradas y salidas, y envuelve corrida, modelo y herramientas |
 | `app/static/index.html` | Página única; clave en `sessionStorage`; historial en el navegador; pinta con `textContent`; «Id de soporte» |
 
 **Cambio frente al plan de la sesión 3**: el plan ponía `build_models()` en `llm.py`. Como `pricing.py` y
@@ -193,7 +197,7 @@ El límite por cliente (ADR 0010) también acota el gasto.
 | `SERVICE_NAME` | `hr-assistant` | Campo `service` del log |
 | `SLO_P95_MS` | `2000` | Entero >= 1; meta del p95 en milisegundos |
 | `LANGSMITH_TRACING` | `false` | `true` o `false`; enciende las trazas solo si además existe la clave |
-| `HIDE_INPUTS` / `HIDE_OUTPUTS` | `true` | `true` o `false`; en producción con trazas, `true` |
+| `HIDE_INPUTS` / `HIDE_OUTPUTS` | `true` | `true` (ocultar), `redact` (redactar) o `false` (en claro); en producción con trazas, nunca `false` |
 | `LANGSMITH_API_KEY` | (sin valor) | Secreto; lo lee el cliente de LangSmith; nunca se registra |
 | `CF_ACCOUNT_ID` | (vacía) | Obligatoria con `gateway` |
 | `CF_GATEWAY_ID` | `default` | Obligatoria con `gateway` |
@@ -222,6 +226,8 @@ incluye un secreto. `product/.env.example` lista todas las variables con los sec
 - **Mínima agencia**: dos herramientas de solo lectura, validadas antes de ejecutarse y auditadas.
 - **Entradas acotadas, salidas limpias**: el cuerpo, el historial y cada mensaje tienen tope; la respuesta sale
   sin caracteres de control ni HTML y con largo máximo (ADR 0013).
+- **Datos personales fuera del modelo y de las trazas**: se redactan antes del modelo, en la respuesta y en
+  LangSmith; un secreto en la petición la bloquea (ADR 0014).
 - **Acceso controlado**: clave por cliente comparada en tiempo constante; la clave nunca se registra.
 - **Rastreable sin exponer datos**: el log y las trazas por omisión no llevan el texto de preguntas ni respuestas.
 - **Costo visible**: cada respuesta y `/metrics` dicen cuánto costó.

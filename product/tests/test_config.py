@@ -42,6 +42,18 @@ def test_observability_defaults_are_safe():
     assert observability.slo_p95_ms == 2000
     assert observability.tracing_enabled is False
     assert (observability.hide_inputs, observability.hide_outputs) == (True, True)
+    assert (observability.inputs_privacy, observability.outputs_privacy) == (
+        "hide",
+        "hide",
+    )
+
+
+def test_trace_privacy_accepts_hide_redact_or_clear():
+    modes = {"true": "hide", "redact": "redact", "REDACT": "redact", "false": "clear"}
+    for value, mode in modes.items():
+        observability = load_settings({"HIDE_OUTPUTS": value}).observability
+        assert observability.outputs_privacy == mode
+        assert observability.hide_outputs is (mode == "hide")
 
 
 def test_invalid_observability_values_stop_the_start():

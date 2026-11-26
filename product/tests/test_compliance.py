@@ -25,6 +25,11 @@ def test_production_refuses_unsafe_settings():
             "LANGSMITH_TRACING": "true",
             "HIDE_OUTPUTS": "false",
         },
+        "must be true (hide) or redact, never false": {
+            "LANGSMITH_TRACING": "true",
+            "HIDE_INPUTS": "redact",
+            "HIDE_OUTPUTS": "false",
+        },
     }
     for rule, change in unsafe.items():
         settings = load_settings({**SAFE_PRODUCTION, **change})
@@ -34,6 +39,19 @@ def test_production_refuses_unsafe_settings():
         assert message.startswith("ENVIRONMENT=production refuses to start: ")
         assert rule in message
         assert "short-secret" not in message
+
+
+@pytest.mark.parametrize(
+    "inputs, outputs", [("true", "true"), ("redact", "redact"), ("true", "redact")]
+)
+def test_production_traces_may_be_hidden_or_redacted(inputs, outputs):
+    traced = {
+        **SAFE_PRODUCTION,
+        "LANGSMITH_TRACING": "true",
+        "HIDE_INPUTS": inputs,
+        "HIDE_OUTPUTS": outputs,
+    }
+    assert not compliance.violations(load_settings(traced))
 
 
 def test_a_safe_production_and_any_development_setup_start():

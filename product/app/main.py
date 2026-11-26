@@ -32,6 +32,7 @@ from app.gateway import ModelUnavailable, build_http_client
 from app.llm import ChatModel
 from app.logs import EventLogger
 from app.metrics import Metrics
+from app.privacy import SecretFound, merge_counts, scan
 from app.routing import Router, apply_window
 from app.sanitize import sanitize_answer
 from app.schemas import AskResponse, build_ask_request
@@ -133,9 +134,12 @@ class AskService:
     ) -> AskResponse:
         """Responde una pregunta y deja su rastro sin guardar el texto ni la clave.
 
+        Antes del modelo, un secreto en la pregunta o el historial bloquea la petición
+        (``secret_blocked``) y los datos personales se redactan (``pii_detected``).
         Audita cada herramienta (``tool_call``), cada respuesta del modelo fuera del
-        protocolo (``output_rejected``, con su motivo) y la limpieza de la respuesta
-        (``output_sanitized``, con los cambios); nunca el texto.
+        protocolo (``output_rejected``, con su motivo), la limpieza de la respuesta
+        (``output_sanitized``, con los cambios) y su redacción (``pii_detected``);
+        siempre tipos y cantidades, nunca el texto.
 
         :param question: Pregunta ya validada
         :type question: str
@@ -148,7 +152,9 @@ class AskService:
         :return: La respuesta de la API, con modelo, ruta y costo
         :rtype: app.schemas.AskResponse
         :raises app.gateway.ModelUnavailable: Si el modelo real falla
+        :raises app.privacy.SecretFound: Si la pregunta o el historial traen un secreto
         """
+        question, history = self._screen(question, history, request_id, client)
         decision = self._router.choose(question)
         sent = apply_window(history, self._window)
         on_tool_call, on_invalid_reply = self._auditors(request_id, client)
@@ -222,8 +228,73 @@ class AskService:
 
         return tool_call, output_rejected
 
+    def _audit_findings(
+        self, action: str, request_id: str, client: str, findings: dict
+    ) -> None:
+        """Audita, por lugar, los tipos encontrados y cuántos; nunca los valores.
+
+        :param action: ``pii_detected`` o ``secret_blocked``
+        :type action: str
+        :param request_id: Id de la petición
+        :type request_id: str
+        :param client: Cliente autenticado
+        :type client: str
+        :param findings: ``{lugar: {tipo: cantidad}}``; los lugares vacíos no se auditan
+        :type findings: dict
+        """
+        for location, types in findings.items():
+            if types:
+                self._observability.logger.emit(
+                    "audit",
+                    request_id,
+                    action=action,
+                    client=client,
+                    location=location,
+                    types=types,
+                )
+
+    def _screen(
+        self, question: str, history: list[dict], request_id: str, client: str
+    ) -> tuple[str, list[dict]]:
+        """Revisa la entrada antes del modelo (ADR 0014).
+
+        :param question: Pregunta ya validada
+        :type question: str
+        :param history: Historial que mandó el cliente
+        :type history: list[dict]
+        :param request_id: Id de la petición
+        :type request_id: str
+        :param client: Cliente autenticado
+        :type client: str
+        :return: La pregunta y el historial con los datos personales redactados
+        :rtype: tuple[str, list[dict]]
+        :raises app.privacy.SecretFound: Si alguno trae un secreto
+        """
+        asked = scan(question)
+        turns = [scan(turn["content"]) for turn in history]
+        secrets = {
+            "question": asked.secrets,
+            "history": merge_counts(turn.secrets for turn in turns),
+        }
+        if any(secrets.values()):
+            self._audit_findings("secret_blocked", request_id, client, secrets)
+            raise SecretFound()
+        personal = {
+            "question": asked.pii,
+            "history": merge_counts(turn.pii for turn in turns),
+        }
+        self._audit_findings("pii_detected", request_id, client, personal)
+        redacted = [
+            {"role": turn["role"], "content": found.text}
+            for turn, found in zip(history, turns)
+        ]
+        return asked.text, redacted
+
     def _clean(self, result: AgentResult, request_id: str, client: str) -> AgentResult:
-        """Limpia la respuesta; si cambió algo, lo audita como ``output_sanitized``.
+        """Limpia la respuesta y redacta sus datos personales y secretos.
+
+        Si cambió algo, lo audita: ``output_sanitized`` con los cambios de limpieza y
+        ``pii_detected`` con lo redactado (lugar ``answer``).
 
         :param result: Resultado del agente
         :type result: app.agent.AgentResult
@@ -235,15 +306,26 @@ class AskService:
         :rtype: app.agent.AgentResult
         """
         clean = sanitize_answer(result.answer, self._max_answer_chars, CAP_REACHED)
-        if clean.changes:
+        changes = list(clean.changes)
+        found = scan(clean.text)
+        text = clean.text
+        if found.found:
+            self._audit_findings(
+                "pii_detected", request_id, client, {"answer": found.types}
+            )
+            # Las marcas [REDACTED:...] pueden alargar el texto: se vuelve a recortar.
+            again = sanitize_answer(found.text, self._max_answer_chars, CAP_REACHED)
+            text = again.text
+            changes += [change for change in again.changes if change not in changes]
+        if changes:
             self._observability.logger.emit(
                 "audit",
                 request_id,
                 action="output_sanitized",
                 client=client,
-                changes=list(clean.changes),
+                changes=changes,
             )
-        return replace(result, answer=clean.text)
+        return replace(result, answer=text)
 
 
 def _lifespan(client: httpx.Client | None) -> Callable:
@@ -365,6 +447,19 @@ def _add_observability(app: FastAPI, observability: Observability) -> None:
         )
 
 
+def _add_secret_handler(app: FastAPI) -> None:
+    """Un secreto en la petición responde ``400`` (ya auditado como ``secret_blocked``).
+
+    :param app: La aplicación
+    :type app: fastapi.FastAPI
+    """
+
+    @app.exception_handler(SecretFound)
+    async def secret_found(_request: Request, _error: SecretFound):
+        """La pregunta o el historial traen un secreto: no llegan al modelo."""
+        return JSONResponse(status_code=400, content={"detail": SecretFound.DETAIL})
+
+
 def _add_routes(
     app: FastAPI,
     settings: Settings,
@@ -457,6 +552,7 @@ def create_app(
     # después, queda por fuera y le pone X-Request-ID y log también al 413.
     app.add_middleware(BodySizeLimit, max_bytes=settings.limits.body_bytes)
     _add_observability(app, observability)
+    _add_secret_handler(app)
     access = _access_dependencies(settings, observability)
     _add_routes(app, settings, service, observability.metrics, access)
     return app

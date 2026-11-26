@@ -46,6 +46,9 @@ DEFAULTS = {
     "RATE_LIMIT_PER_MINUTE": "30",
 }
 BOOLEANS = {"true": True, "false": False}
+# HIDE_INPUTS / HIDE_OUTPUTS: true oculta, redact redacta y false manda en claro
+# (ADR 0014).
+TRACE_PRIVACY = {"true": "hide", "redact": "redact", "false": "clear"}
 GATEWAY_VARIABLES = ("CF_ACCOUNT_ID", "CF_GATEWAY_ID", "CF_API_TOKEN")
 ENVIRONMENTS = ("development", "production")
 # Que quepan los textos seguros del agente y la marca de recorte (ADR 0013).
@@ -67,10 +70,11 @@ class ObservabilitySettings:
     :type slo_p95_ms: int
     :param tracing_enabled: ``LANGSMITH_TRACING=true`` y la clave presente
     :type tracing_enabled: bool
-    :param hide_inputs: No mandar a LangSmith las entradas
-    :type hide_inputs: bool
-    :param hide_outputs: No mandar a LangSmith las salidas
-    :type hide_outputs: bool
+    :param inputs_privacy: Qué hacer con las entradas en LangSmith: ``hide``,
+        ``redact`` o ``clear``
+    :type inputs_privacy: str
+    :param outputs_privacy: Lo mismo para las salidas
+    :type outputs_privacy: str
     :param tracing_requested: ``LANGSMITH_TRACING=true``, haya o no clave (lo revisa
         compliance)
     :type tracing_requested: bool
@@ -79,9 +83,36 @@ class ObservabilitySettings:
     service_name: str
     slo_p95_ms: int
     tracing_enabled: bool
-    hide_inputs: bool
-    hide_outputs: bool
+    inputs_privacy: str
+    outputs_privacy: str
     tracing_requested: bool = False
+
+    @property
+    def hide_inputs(self) -> bool:
+        """Indica si las entradas no se mandan a LangSmith.
+
+        :return: ``True`` con ``HIDE_INPUTS=true``
+        :rtype: bool
+        """
+        return self.inputs_privacy == "hide"
+
+    @property
+    def hide_outputs(self) -> bool:
+        """Indica si las salidas no se mandan a LangSmith.
+
+        :return: ``True`` con ``HIDE_OUTPUTS=true``
+        :rtype: bool
+        """
+        return self.outputs_privacy == "hide"
+
+    @property
+    def redacts(self) -> bool:
+        """Indica si alguna dirección se manda redactada.
+
+        :return: ``True`` si ``HIDE_INPUTS`` o ``HIDE_OUTPUTS`` vale ``redact``
+        :rtype: bool
+        """
+        return "redact" in (self.inputs_privacy, self.outputs_privacy)
 
 
 @dataclass(frozen=True)
@@ -302,6 +333,23 @@ def _boolean(env: Mapping[str, str], name: str) -> bool:
     return BOOLEANS[raw.lower()]
 
 
+def _trace_privacy(env: Mapping[str, str], name: str) -> str:
+    """Lee ``HIDE_INPUTS`` o ``HIDE_OUTPUTS``: ``true``, ``redact`` o ``false``.
+
+    :param env: Variables de entorno
+    :type env: Mapping[str, str]
+    :param name: Nombre de la variable
+    :type name: str
+    :return: ``hide``, ``redact`` o ``clear``
+    :rtype: str
+    :raises ConfigError: Si no es ninguno de los tres valores
+    """
+    raw = _raw(env, name)
+    if raw.lower() not in TRACE_PRIVACY:
+        raise ConfigError(f"{name} must be true, redact or false, got {raw!r}")
+    return TRACE_PRIVACY[raw.lower()]
+
+
 def _path(env: Mapping[str, str], name: str) -> Path:
     """Ruta de la variable; si es relativa, se toma desde la raíz del producto."""
     path = Path(_raw(env, name))
@@ -316,8 +364,8 @@ def _observability(env: Mapping[str, str]) -> ObservabilitySettings:
         service_name=_raw(env, "SERVICE_NAME") or DEFAULTS["SERVICE_NAME"],
         slo_p95_ms=_integer(env, "SLO_P95_MS", 1),
         tracing_enabled=requested and has_key,
-        hide_inputs=_boolean(env, "HIDE_INPUTS"),
-        hide_outputs=_boolean(env, "HIDE_OUTPUTS"),
+        inputs_privacy=_trace_privacy(env, "HIDE_INPUTS"),
+        outputs_privacy=_trace_privacy(env, "HIDE_OUTPUTS"),
         tracing_requested=requested,
     )
 

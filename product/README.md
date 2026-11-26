@@ -70,7 +70,8 @@ Errores: `401 {"detail": "invalid or missing API key"}`; `429 {"detail": "rate l
 `Retry-After`; `413 {"detail": "request body too large"}` si el cuerpo pasa de `MAX_BODY_BYTES` (antes de leerlo
 y antes de revisar la clave); `422` si la pregunta está vacía o es demasiado larga, si el historial trae más de
 `MAX_HISTORY_MESSAGES` mensajes o uno pasa del largo de su rol, o si hay caracteres de control o marcas
-bidireccionales; `502` si el modelo real falla; `500 {"detail": "internal error", "request_id": ...}` ante
+bidireccionales; `400 {"detail": "request contains a secret; remove it and ask again"}` si la pregunta o el
+historial traen un secreto; `502` si el modelo real falla; `500 {"detail": "internal error", "request_id": ...}` ante
 cualquier otra falla. Toda respuesta lleva
 `X-Request-ID`: si el cliente lo manda (1 a 128 caracteres de `A-Z a-z 0-9 . _ : -`) se respeta; si no, se genera
 un UUID.
@@ -85,7 +86,15 @@ un UUID.
 - **Validación de entradas**: el cuerpo tiene tope (`413`); la pregunta, de 1 a `MAX_QUESTION_CHARS` caracteres;
   el historial, hasta `MAX_HISTORY_MESSAGES` mensajes, cada `user` con el tope de la pregunta y cada `assistant`
   con el de la respuesta (nada más largo pudo salir de esta API); ningún texto acepta caracteres de control (salvo
-  tabulador y saltos de línea) ni marcas bidireccionales. Todo lo demás responde `422`.
+  tabulador y saltos de línea), marcas bidireccionales ni caracteres de etiqueta invisibles. Todo lo demás
+  responde `422`.
+- **Datos personales y secretos** (ADR 0014): un detector por patrones busca CURP, RFC, correo, tarjeta (con
+  Luhn), CLABE, NSS y teléfono, y secretos (claves privadas, JWT, llaves de AWS, tokens de GitHub, claves de
+  LangSmith, `Bearer`, `password: ...`). En la pregunta y el historial, los datos personales se redactan como
+  `[REDACTED:TIPO]` antes de llegar al modelo y un secreto bloquea la petición con `400`; en la respuesta y en
+  las trazas, todo se redacta. Los datos del directorio (nombre, puesto, departamento, fecha de ingreso y estado)
+  nunca se redactan. La auditoría (`pii_detected`, `secret_blocked`) dice tipo, cantidad y lugar, nunca el
+  valor. Mira una copia sin caracteres invisibles, en NFKC y con dígitos ASCII, para que no se esquive.
 - **Validación de salidas**: el agente solo ejecuta las dos herramientas de la lista blanca, con `employee_id` de
   la forma `EMP-0000` y un departamento que existe en los datos (normalizados antes de ejecutar). La respuesta
   sale sin caracteres de control ni etiquetas HTML y con `MAX_ANSWER_CHARS` como máximo (se marca
@@ -140,7 +149,7 @@ Todas están en [`.env.example`](.env.example), con los secretos vacíos.
 | `LANGSMITH_TRACING` | `false` | `true` enciende las trazas, solo si además existe `LANGSMITH_API_KEY` |
 | `LANGSMITH_API_KEY` | (sin valor) | Clave de LangSmith. **Secreto**: va en el entorno, nunca en el código ni en el log |
 | `LANGSMITH_PROJECT` | (de LangSmith) | Proyecto donde caen las trazas (opcional) |
-| `HIDE_INPUTS` / `HIDE_OUTPUTS` | `true` | No mandar a LangSmith el texto de preguntas ni respuestas |
+| `HIDE_INPUTS` / `HIDE_OUTPUTS` | `true` | Entradas y salidas en LangSmith: `true` las oculta, `redact` las manda redactadas (datos personales y secretos) y `false` en claro (producción no lo acepta con trazas). Este despliegue usa `redact` |
 | `CF_ACCOUNT_ID` | (sin valor) | Cuenta de Cloudflare; obligatoria con `gateway` |
 | `CF_GATEWAY_ID` | `default` | Nombre del AI Gateway; obligatoria con `gateway` |
 | `CF_API_TOKEN` | (sin valor) | Token de Workers AI. **Secreto**; obligatoria con `gateway` |
@@ -189,8 +198,9 @@ suma el costo de todas las respuestas.
 
 **Trazas**: con `LANGSMITH_TRACING=true` y `LANGSMITH_API_KEY`, cada corrida del agente, cada llamada al modelo y
 cada herramienta quedan en LangSmith con `request_id`, `client`, `model` y `route` en sus metadatos. Con
-`HIDE_INPUTS`/`HIDE_OUTPUTS` en `true` no se manda el texto. Sin la clave, el producto funciona igual y no se
-conecta.
+`HIDE_INPUTS`/`HIDE_OUTPUTS` en `true` no se manda el texto; con `redact` (lo que usa este despliegue) se manda con
+los datos personales y los secretos redactados, así la traza sirve para depurar. Sin la clave, el producto
+funciona igual y no se conecta.
 
 ## Despliegue
 
@@ -204,7 +214,8 @@ Nada se publica sin que una persona lo apruebe. Las piezas:
   simulado) → `docker` (construye la imagen).
 - **Render** (`render.yaml`): Blueprint con el servicio `m4-hr-assistant` (el mismo nombre del repositorio),
   `runtime: docker`, `plan: free`, `healthCheckPath: /health` y `autoDeployTrigger: checksPass` (publica solo si
-  el CI pasa). Declara `ENVIRONMENT=production`, `MODEL_PROVIDER=gateway` y `HIDE_*=true`.
+  el CI pasa). Declara `ENVIRONMENT=production`, `MODEL_PROVIDER=gateway` y `HIDE_*=redact` (trazas
+  redactadas).
 
 Para publicar, una vez aprobado:
 
