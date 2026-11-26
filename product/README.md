@@ -66,8 +66,9 @@ responde o se agota la cuota, `POST /ask` responde `502 {"detail": "model unavai
 | Método y ruta | Clave | Qué hace |
 | --- | --- | --- |
 | `GET /` | No | La página web |
-| `GET /health` | No | `{"status": "ok", "pid": ...}` |
-| `GET /docs` | No | Documentación interactiva (Swagger), con el esquema de seguridad `X-API-Key` |
+| `GET /health` | No | Prueba de vida: `{"status": "ok", "pid": ...}` (Render la usa) |
+| `GET /ready` | No | Disponibilidad: `200` si el directorio está cargado y algún modelo tiene el circuito cerrado; `503` si no. Nunca llama al modelo |
+| `GET /docs` | No | Documentación interactiva (Swagger) con **Authorize** para `X-API-Key`, cada error con su ejemplo; el contrato exportado está en [`doc/openapi.json`](doc/openapi.json) |
 | `POST /ask` | `X-API-Key` | Cuerpo `{"question": "...", "history": [...]}`; responde `answer`, `steps`, `tools_used`, `input_tokens`, `output_tokens`, `request_id`, `model`, `route`, `cached_calls` y `cost_usd` |
 | `GET /metrics` | `X-API-Key` | Peticiones, `error_rate`, latencia p50/p95, tokens, SLO y `cost_usd` acumulado de este proceso |
 
@@ -78,7 +79,8 @@ y antes de revisar la clave); `422` si la pregunta está vacía o es demasiado l
 `MAX_HISTORY_MESSAGES` mensajes o uno pasa del largo de su rol, o si hay caracteres de control o marcas
 bidireccionales; `400 {"detail": "request looks like a prompt injection; ask about employees"}` si la pregunta
 o el historial parecen una inyección y `400 {"detail": "request contains a secret; remove it and ask again"}` si
-traen un secreto; `502` si el modelo real falla; `500 {"detail": "internal error", "request_id": ...}` ante
+traen un secreto; `502` si el modelo real falla tras sus reintentos; `503 {"detail": "model temporarily
+unavailable"}` con `Retry-After` si su circuito está abierto; `500 {"detail": "internal error", "request_id": ...}` ante
 cualquier otra falla. Toda respuesta lleva
 `X-Request-ID`: si el cliente lo manda (1 a 128 caracteres de `A-Z a-z 0-9 . _ : -`) se respeta; si no, se genera
 un UUID.
@@ -192,7 +194,13 @@ Todas están en [`.env.example`](.env.example), con los secretos vacíos.
 | `HISTORY_WINDOW` | `6` | Mensajes de historial que se mandan al modelo (entero >= 0) |
 | `MODEL_MAX_TOKENS` | `300` | Tope de tokens de salida por llamada (entero >= 1) |
 | `MODEL_TEMPERATURE` | `0` | Temperatura (0 a 2); con 0 las evaluaciones son repetibles |
-| `MODEL_TIMEOUT_SECONDS` | `30` | Tiempo máximo de una llamada al modelo real (número > 0) |
+| `MODEL_TIMEOUT_SECONDS` | `30` | Tiempo máximo de una llamada al modelo real (número > 0); también el plazo de sus reintentos |
+| `MODEL_CONNECT_TIMEOUT_SECONDS` | `5` | Tiempo máximo para conectar con el gateway (número > 0) |
+| `MODEL_MAX_RETRIES` | `2` | Reintentos ante fallas transitorias: red, `429`, `5xx` (entero >= 0) |
+| `MODEL_RETRY_BACKOFF_SECONDS` | `0.5` | Espera base entre reintentos; se duplica, con jitter (número >= 0) |
+| `CIRCUIT_FAILURE_THRESHOLD` | `5` | Llamadas fallidas seguidas que abren el circuito de un modelo (entero >= 1) |
+| `CIRCUIT_OPEN_SECONDS` | `30` | Tiempo con el circuito abierto antes de la llamada de prueba (número > 0) |
+| `WEB_CONCURRENCY` | `1` | Procesos de uvicorn; cada uno con sus métricas, límites y circuitos (ADR 0019) |
 | `CACHE_TTL_SECONDS` | `0` | Caché del gateway en segundos (0: apagada) |
 | `PRICES_PATH` | `data/model_prices.json` | Precios por modelo; una ruta relativa se toma desde `product/` |
 | `PORT` | `8000` | Puerto del contenedor (Render lo define) |
@@ -201,6 +209,28 @@ Todas están en [`.env.example`](.env.example), con los secretos vacíos.
 Un valor inválido (por ejemplo `AGENT_MAX_STEPS=0`, `HIDE_INPUTS=maybe` o `MODEL_PROVIDER=gateway` sin
 `CF_API_TOKEN`) o una configuración de producción que no cumple impiden arrancar, con un mensaje que dice qué
 corregir y nunca muestra un secreto.
+
+## Entornos: desarrollo y producción
+
+| | Desarrollo (tu equipo) | Producción (Render) |
+| --- | --- | --- |
+| `ENVIRONMENT` | `development` | `production`: compliance impide arrancar inseguro |
+| Modelo | `fake` por omisión; `gateway` con tu `.env` | `gateway` |
+| Claves | Las de tu `.env` | `API_KEYS` en Render > Environment |
+| Proyecto de LangSmith | `m4-hr-assistant-dev` | `m4-hr-assistant-prod` |
+| Origen de las peticiones | Socket (`TRUSTED_PROXY_HOPS=0`) | Proxy de Render (`TRUSTED_PROXY_HOPS=1`) |
+| HSTS | No | Sí |
+
+Detalle y razones en el ADR 0019.
+
+## Disponibilidad y concurrencia
+
+- **Resiliencia del modelo real** (ADR 0018): reintentos con backoff y jitter solo ante fallas transitorias,
+  respetando `Retry-After`; un circuit breaker por modelo que, tras varias fallas seguidas, responde `503` al
+  instante; y fallback del modelo grande al pequeño (la respuesta lo dice con `route` terminado en `+fallback`).
+- **Concurrencia** (ADR 0019): las rutas corren en el pool de hilos de FastAPI y todo el estado compartido tiene
+  candado. `scripts/load_test.py <url>`, con la clave en `SMOKE_API_KEY`, mide códigos, peticiones por segundo y
+  latencias (`doc/evidence/load-test.txt`: 200 de 200 con 20 a la vez).
 
 ## Observabilidad
 
@@ -293,6 +323,9 @@ Imprime `[OK]` o `[FAIL]` para `/health` (200), `/ask` sin clave (401) y `/ask` 
 duerme el servicio tras 15 minutos sin uso; la primera petición puede tardar hasta un minuto.
 
 ## Pruebas
+
+Si cambias la API, regenera el contrato desde `product/` con `uv run python scripts/export_openapi.py`; la
+prueba `tests/test_api_contract.py` falla si `doc/openapi.json` quedó viejo.
 
 Desde la raíz de la fábrica:
 

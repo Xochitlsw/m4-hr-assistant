@@ -24,9 +24,10 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import APIKeyHeader
 
 from app import compliance
+from app import api_docs
 from app.agent import CAP_REACHED, Agent, AgentResult
 from app.body_limit import BodySizeLimit
-from app.catalog import build_models
+from app.catalog import add_resilience, build_models
 from app.clock import Clock, SystemClock
 from app.config import ConfigError, Settings, load_settings
 from app.directory import EmployeeDirectory
@@ -37,9 +38,10 @@ from app.llm import ChatModel
 from app.logs import EventLogger
 from app.metrics import Metrics
 from app.privacy import SecretFound, merge_counts, scan
+from app.resilience import ModelCircuitOpen
 from app.routing import Router, apply_window
 from app.sanitize import BlockedRequest, sanitize_answer
-from app.schemas import AskResponse, build_ask_request
+from app.schemas import AskResponse, HealthResponse, ReadyResponse, build_ask_request
 from app.security import (
     DailyBudget,
     FailureLimiter,
@@ -135,11 +137,9 @@ class AskService:
         self._router = Router(
             settings.routing, settings.models.small, settings.models.large
         )
-        self._window = settings.routing.history_window
+        self._settings = settings
         self._models = dict(models)
         self._directory = directory
-        self._max_steps = settings.agent_max_steps
-        self._max_answer_chars = settings.limits.answer_chars
         self._observability = observability
 
     def answer(
@@ -171,17 +171,10 @@ class AskService:
         """
         question, history = self._screen(question, history, request_id, client)
         decision = self._router.choose(question)
-        sent = apply_window(history, self._window)
-        on_tool_call, on_invalid_reply = self._auditors(request_id, client)
-        agent = Agent(self._models[decision.model], self._directory, self._max_steps)
-        metadata = {"client": client, "model": decision.model, "route": decision.route}
-        with self._observability.tracer.request(request_id, **metadata):
-            result = agent.run(
-                question,
-                sent,
-                on_tool_call=on_tool_call,
-                on_invalid_reply=on_invalid_reply,
-            )
+        sent = apply_window(history, self._settings.routing.history_window)
+        result, decision = self._run_with_fallback(
+            decision, question, sent, request_id, client
+        )
         result = self._clean(result, request_id, client)
         response = AskResponse.from_result(result, request_id, decision)
         log = self._observability.logger
@@ -201,11 +194,82 @@ class AskService:
             route=decision.route,
             cached_calls=response.cached_calls,
             cost_usd=response.cost_usd,
+            model_retries=result.usage.retries,
         )
         metrics = self._observability.metrics
         metrics.add_tokens(result.input_tokens, result.output_tokens)
         metrics.add_cost(result.usage.cost_usd)
         return response
+
+    def _run_agent(
+        self, decision, question: str, sent: list[dict], request_id: str, client: str
+    ) -> AgentResult:
+        """Corre el agente con el modelo de la decisión, en el contexto de traza."""
+        on_tool_call, on_invalid_reply = self._auditors(request_id, client)
+        agent = Agent(
+            self._models[decision.model],
+            self._directory,
+            self._settings.agent_max_steps,
+        )
+        metadata = {"client": client, "model": decision.model, "route": decision.route}
+        with self._observability.tracer.request(request_id, **metadata):
+            return agent.run(
+                question,
+                sent,
+                on_tool_call=on_tool_call,
+                on_invalid_reply=on_invalid_reply,
+            )
+
+    def _run_with_fallback(
+        self, decision, question: str, sent: list[dict], request_id: str, client: str
+    ) -> tuple[AgentResult, object]:
+        """Si falla el modelo grande, responde con el pequeño (ADR 0018).
+
+        La respuesta lo dice: ``model`` es el pequeño y ``route`` termina en
+        ``+fallback``. El log registra ``model_fallback``.
+
+        :return: El resultado y la decisión que de verdad se usó
+        :raises app.gateway.ModelUnavailable: Si falla el pequeño, o si no había otro
+        """
+        try:
+            result = self._run_agent(decision, question, sent, request_id, client)
+            return result, decision
+        except ModelUnavailable as error:
+            small, large = self._settings.models.small, self._settings.models.large
+            if decision.model != large or small == large:
+                raise
+            self._observability.logger.emit(
+                "model_fallback",
+                request_id,
+                client=client,
+                from_model=large,
+                to_model=small,
+                error_type=type(error).__name__,
+            )
+            decision = decision._replace(
+                model=small, route=f"{decision.route}+fallback"
+            )
+            result = self._run_agent(decision, question, sent, request_id, client)
+            return result, decision
+
+    def readiness(self) -> tuple[bool, dict]:
+        """Estado para ``GET /ready``: datos cargados y circuitos de los modelos.
+
+        La configuración y los precios ya se validaron al arrancar (si no, la aplicación
+        no habría arrancado). Está lista si hay directorio y algún modelo no tiene el
+        circuito abierto.
+
+        :return: ``(lista, cuerpo de la respuesta)``
+        :rtype: tuple[bool, dict]
+        """
+        models = {
+            name: getattr(model, "circuit_state", "closed")
+            for name, model in self._models.items()
+        }
+        directory = "ok" if self._directory.departments() else "empty"
+        ready = directory == "ok" and any(state != "open" for state in models.values())
+        checks = {"directory": directory, "prices": "ok", "models": models}
+        return ready, {"status": "ready" if ready else "not_ready", "checks": checks}
 
     def _auditors(
         self, request_id: str, client: str
@@ -335,7 +399,8 @@ class AskService:
         :return: El mismo resultado con la respuesta limpia
         :rtype: app.agent.AgentResult
         """
-        clean = sanitize_answer(result.answer, self._max_answer_chars, CAP_REACHED)
+        max_chars = self._settings.limits.answer_chars
+        clean = sanitize_answer(result.answer, max_chars, CAP_REACHED)
         changes = list(clean.changes)
         found = scan(clean.text)
         text = clean.text
@@ -344,7 +409,7 @@ class AskService:
                 "pii_detected", request_id, client, {"answer": found.types}
             )
             # Las marcas [REDACTED:...] pueden alargar el texto: se vuelve a recortar.
-            again = sanitize_answer(found.text, self._max_answer_chars, CAP_REACHED)
+            again = sanitize_answer(found.text, max_chars, CAP_REACHED)
             text = again.text
             changes += [change for change in again.changes if change not in changes]
         if changes:
@@ -553,6 +618,25 @@ def _add_observability(app: FastAPI, observability: Observability) -> None:
         )
         return response
 
+    @app.exception_handler(ModelCircuitOpen)
+    async def circuit_open(request: Request, error: ModelCircuitOpen):
+        """Circuito abierto: ``503`` rápido con ``Retry-After`` (ADR 0018)."""
+        request_id = request.state.request_id
+        log.emit(
+            "error",
+            request_id,
+            client=getattr(request.state, "client", None),
+            error_type=type(error).__name__,
+        )
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": "model temporarily unavailable",
+                "request_id": request_id,
+            },
+            headers={"Retry-After": str(error.retry_after)},
+        )
+
     @app.exception_handler(ModelUnavailable)
     async def model_unavailable(request: Request, error: ModelUnavailable):
         """El modelo real no respondió: ``502`` con el ``request_id``."""
@@ -594,26 +678,67 @@ def _add_routes(
     ask_request = build_ask_request(settings)
     page = PAGE.read_text(encoding="utf-8")
 
-    @app.get("/", response_class=HTMLResponse, summary="HR Assistant web page")
+    @app.get(
+        "/",
+        response_class=HTMLResponse,
+        tags=["page"],
+        summary="HR Assistant web page",
+        description="Page for HR staff; the key lives only in `sessionStorage`.",
+    )
     def home() -> str:
         """Sirve la página web del personal de RH."""
         return page
 
-    @app.get("/health", summary="Health check with the process id")
+    @app.get(
+        "/health",
+        response_model=HealthResponse,
+        tags=["operations"],
+        summary="Liveness: the process answers",
+        description="Cheap check for the platform; no key and no external calls.",
+    )
     def health() -> dict:
         """Indica que el proceso responde y cuál copia contestó."""
         return {"status": "ok", "pid": os.getpid()}
 
     @app.get(
+        "/ready",
+        response_model=ReadyResponse,
+        responses=api_docs.READY_RESPONSES,
+        tags=["operations"],
+        summary="Readiness: data loaded and a model available",
+        description=(
+            "`200` if the directory is loaded and at least one model circuit is not "
+            "open; `503` otherwise. Never calls the model."
+        ),
+    )
+    def ready() -> JSONResponse:
+        """Dice si la copia puede atender preguntas (ADR 0019)."""
+        is_ready, body = service.readiness()
+        return JSONResponse(status_code=200 if is_ready else 503, content=body)
+
+    @app.get(
         "/metrics",
+        responses=api_docs.METRICS_RESPONSES,
+        tags=["operations"],
         summary="Latency, errors, tokens, cost and SLO",
+        description="Metrics of this process (each worker has its own).",
         dependencies=[Depends(require_client)],
     )
     def process_metrics() -> dict:
         """Métricas del tráfico de usuarios de este proceso."""
         return metrics.snapshot()
 
-    @app.post("/ask", response_model=AskResponse, summary="Ask the HR Assistant")
+    @app.post(
+        "/ask",
+        response_model=AskResponse,
+        responses=api_docs.ASK_ERRORS,
+        tags=["ask"],
+        summary="Ask the HR Assistant",
+        description=(
+            "Routes the question to a model, runs the agent with its read-only tools "
+            "and answers with the model, the route and the cost."
+        ),
+    )
     def ask(
         body: ask_request, request: Request, client: str = Depends(limit_rate)
     ) -> AskResponse:
@@ -680,11 +805,19 @@ def create_app(
     if http_client is None and model is None and settings.models.provider == "gateway":
         owned_client = http_client = build_http_client(settings.models)
     models = build_models(settings, directory, http_client, model)
+    if model is None and settings.models.provider == "gateway":
+        models = add_resilience(
+            models,
+            settings,
+            observability.clock,
+            lambda name, **fields: observability.logger.emit(name, None, **fields),
+        )
     service = AskService(settings, models, directory, observability)
     app = FastAPI(
         title="HR Assistant",
-        version="1.0.0",
-        description="Answers questions about employees from the HR directory.",
+        version=api_docs.VERSION,
+        description=api_docs.DESCRIPTION,
+        openapi_tags=api_docs.OPENAPI_TAGS,
         redoc_url=None,
         lifespan=_lifespan(
             owned_client,

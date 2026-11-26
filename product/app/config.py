@@ -39,6 +39,11 @@ DEFAULTS = {
     "MODEL_MAX_TOKENS": "300",
     "MODEL_TEMPERATURE": "0",
     "MODEL_TIMEOUT_SECONDS": "30",
+    "MODEL_CONNECT_TIMEOUT_SECONDS": "5",
+    "MODEL_MAX_RETRIES": "2",
+    "MODEL_RETRY_BACKOFF_SECONDS": "0.5",
+    "CIRCUIT_FAILURE_THRESHOLD": "5",
+    "CIRCUIT_OPEN_SECONDS": "30",
     "CACHE_TTL_SECONDS": "0",
     "PRICES_PATH": "data/model_prices.json",
     "ENVIRONMENT": "development",
@@ -119,6 +124,29 @@ class ObservabilitySettings:
 
 
 @dataclass(frozen=True)
+class ResilienceSettings:
+    """Reintentos, backoff y circuit breaker del modelo real (ADR 0018).
+
+    :param connect_timeout_seconds: Tiempo máximo para conectar con el gateway
+    :type connect_timeout_seconds: float
+    :param max_retries: Reintentos de una llamada con falla transitoria
+    :type max_retries: int
+    :param backoff_seconds: Espera base; se duplica en cada reintento, con jitter
+    :type backoff_seconds: float
+    :param failure_threshold: Llamadas fallidas seguidas que abren el circuito
+    :type failure_threshold: int
+    :param open_seconds: Tiempo abierto antes de la llamada de prueba
+    :type open_seconds: float
+    """
+
+    connect_timeout_seconds: float = 5.0
+    max_retries: int = 2
+    backoff_seconds: float = 0.5
+    failure_threshold: int = 5
+    open_seconds: float = 30.0
+
+
+@dataclass(frozen=True)
 class GatewaySettings:
     """Conexión con Cloudflare AI Gateway (solo se usa con ``gateway``).
 
@@ -139,6 +167,7 @@ class GatewaySettings:
     api_token: str = field(repr=False)
     cache_ttl_seconds: int = 0
     timeout_seconds: float = 30.0
+    resilience: ResilienceSettings = field(default_factory=ResilienceSettings)
 
 
 @dataclass(frozen=True)
@@ -400,6 +429,30 @@ def _gateway(env: Mapping[str, str], provider: str) -> GatewaySettings:
         cache_ttl_seconds=_integer(env, "CACHE_TTL_SECONDS", 0),
         timeout_seconds=_number(
             env, "MODEL_TIMEOUT_SECONDS", lambda value: value > 0, "a number > 0"
+        ),
+        resilience=_resilience(env),
+    )
+
+
+def _resilience(env: Mapping[str, str]) -> ResilienceSettings:
+    """Reintentos y circuit breaker; ver :class:`ResilienceSettings`."""
+    return ResilienceSettings(
+        connect_timeout_seconds=_number(
+            env,
+            "MODEL_CONNECT_TIMEOUT_SECONDS",
+            lambda value: value > 0,
+            "a number > 0",
+        ),
+        max_retries=_integer(env, "MODEL_MAX_RETRIES", 0),
+        backoff_seconds=_number(
+            env,
+            "MODEL_RETRY_BACKOFF_SECONDS",
+            lambda value: value >= 0,
+            "a number >= 0",
+        ),
+        failure_threshold=_integer(env, "CIRCUIT_FAILURE_THRESHOLD", 1),
+        open_seconds=_number(
+            env, "CIRCUIT_OPEN_SECONDS", lambda value: value > 0, "a number > 0"
         ),
     )
 

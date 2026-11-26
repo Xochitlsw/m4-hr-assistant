@@ -24,6 +24,9 @@ services:
       # X-Forwarded-For (ADR 0017).
       - key: TRUSTED_PROXY_HOPS
         value: "1"
+      # Separación de entornos: las trazas de producción van a su propio proyecto.
+      - key: LANGSMITH_PROJECT
+        value: m4-hr-assistant-prod
       # Trazas redactadas (ADR 0014): si se encienden, LangSmith recibe el texto con los
       # datos personales y los secretos reemplazados por [REDACTED:TIPO].
       - key: HIDE_INPUTS

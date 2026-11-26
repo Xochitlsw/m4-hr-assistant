@@ -22,6 +22,67 @@ from app.routing import RouteDecision
 from app.sanitize import has_forbidden_chars
 
 COST_DECIMALS = 8
+ASK_EXAMPLE = {
+    "question": "¿Quiénes trabajan en Finanzas?",
+    "history": [
+        {"role": "user", "content": "¿Quién es EMP-0004?"},
+        {"role": "assistant", "content": "Jorge Díaz, Desarrollador en Tecnología."},
+    ],
+}
+
+
+class ErrorBody(BaseModel):
+    """Cuerpo de un error de la API."""
+
+    detail: str = Field(description="What went wrong, in English")
+    request_id: str | None = Field(
+        default=None, description="Id of the request (on 500, 502 and 503)"
+    )
+
+
+class HealthResponse(BaseModel):
+    """Respuesta de ``GET /health``."""
+
+    model_config = ConfigDict(
+        json_schema_extra={"examples": [{"status": "ok", "pid": 7}]}
+    )
+
+    status: Literal["ok"] = Field(description="The process answers")
+    pid: int = Field(description="Process that answered (state is per process)")
+
+
+class ReadyChecks(BaseModel):
+    """Comprobaciones de ``GET /ready``."""
+
+    directory: str = Field(description="`ok` if the employee directory is loaded")
+    prices: str = Field(description="`ok` if every model has a price")
+    models: dict[str, str] = Field(
+        description="Circuit of each model: `closed`, `open` or `half_open`"
+    )
+
+
+class ReadyResponse(BaseModel):
+    """Respuesta de ``GET /ready``."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "status": "ready",
+                    "checks": {
+                        "directory": "ok",
+                        "prices": "ok",
+                        "models": {"@cf/meta/llama-3.1-8b-instruct-fast": "closed"},
+                    },
+                }
+            ]
+        }
+    )
+
+    status: Literal["ready", "not_ready"] = Field(
+        description="`ready` if the data is loaded and a model circuit is not open"
+    )
+    checks: ReadyChecks
 
 
 def reject_forbidden_chars(text: str) -> str:
@@ -82,11 +143,15 @@ def build_ask_request(settings: Settings) -> type[BaseModel]:
     class AskRequest(BaseModel):
         """Cuerpo de ``POST /ask``: la pregunta y el historial opcional."""
 
-        model_config = ConfigDict(extra="forbid")
+        model_config = ConfigDict(
+            extra="forbid", json_schema_extra={"examples": [ASK_EXAMPLE]}
+        )
 
-        question: question_type
+        question: question_type = Field(description="Question for the HR assistant")
         history: list[Message] = Field(
-            default_factory=list, max_length=limits.history_messages
+            default_factory=list,
+            max_length=limits.history_messages,
+            description="Previous turns of the conversation, oldest first",
         )
 
     return AskRequest
@@ -94,6 +159,25 @@ def build_ask_request(settings: Settings) -> type[BaseModel]:
 
 class AskResponse(BaseModel):
     """Respuesta de ``POST /ask``."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "answer": "Jorge Díaz es Desarrollador en Tecnología, activo.",
+                    "steps": 2,
+                    "tools_used": ["get_employee"],
+                    "input_tokens": 127,
+                    "output_tokens": 23,
+                    "request_id": "3f0c8f3e-6b1a-4f7e-9d2b-7c1e2a9b5d10",
+                    "model": "@cf/meta/llama-3.1-8b-instruct-fast",
+                    "route": "simple",
+                    "cached_calls": 0,
+                    "cost_usd": 0.00001455,
+                }
+            ]
+        }
+    )
 
     answer: str = Field(description="Answer for the HR staff, in Spanish")
     steps: int = Field(description="Model calls used by the agent")

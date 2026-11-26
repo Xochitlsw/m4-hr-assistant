@@ -33,6 +33,16 @@ Decisiones:
   seguridad y topes de producción.
 - [ADR 0017](adr/0017-request-origin-auth-throttling-and-budget.md): origen de las peticiones, límite de claves
   fallidas y presupuesto diario.
+- [ADR 0018](adr/0018-model-resilience-retries-fallback-circuit-breaker.md): resiliencia del modelo real.
+- [ADR 0019](adr/0019-concurrency-readiness-api-contract-and-environments.md): concurrencia, readiness, contrato
+  de la API y entornos.
+- [ADR 0020](adr/0020-two-layer-multi-agent-system.md): el sistema multi-agente en dos capas.
+
+## El sistema en dos capas
+
+La capa 1 es la fábrica de agentes, que especifica y juzga cada entrega; la capa 2 es el agente del HR Assistant
+en producción. El diagrama y la evidencia de cada una están en el ADR 0020. El resto de este documento describe la
+capa 2.
 
 Controles de seguridad, amenazas y mínimo privilegio: [`security.md`](security.md).
 
@@ -50,7 +60,9 @@ flowchart LR
   api --> agent["Agente<br/>agent.py · bucle con tope · argumentos validados"]
   api -- "respuesta" --> clean["sanitize.py<br/>quita controles y HTML · recorta"]
   catalog["catalog.py<br/>arma los dos modelos"] -. "al arrancar" .-> priced
-  agent -- "complete(messages)" --> priced["PricedModel<br/>pricing.py · costo por llamada"]
+  agent -- "complete(messages)" --> resilient["ResilientModel x2<br/>resilience.py · reintentos · circuito"]
+  resilient --> priced["PricedModel<br/>pricing.py · costo por llamada"]
+  api -. "si falla el grande" .-> fallback["fallback al pequeño<br/>route +fallback"]
   priced --> fake["FakeModel x2<br/>MODEL_PROVIDER=fake"]
   priced --> gw["GatewayModel x2<br/>gateway.py · palancas 3 y 4"]
   gw -- "httpx.Client inyectado" --> cf[("Cloudflare AI Gateway<br/>Workers AI")]
@@ -85,7 +97,9 @@ flowchart LR
 | `app/agent.py` | Bucle con tope, protocolo JSON, lista blanca, argumentos validados y normalizados (`EMP-0000`, departamentos de los datos), consumo (`Usage`) y avisos por herramienta y por respuesta rechazada |
 | `app/catalog.py` | Arma el modelo pequeño y el grande (simulados o reales) envueltos en `PricedModel`, y valida sus precios |
 | `app/llm.py` | Interfaz `complete(messages)`, `Completion` y `FakeModel` |
-| `app/gateway.py` | Workers AI vía AI Gateway: petición, tope de salida, caché, `usage`, adaptador al protocolo y `ModelUnavailable` |
+| `app/gateway.py` | Workers AI vía AI Gateway: petición, tope de salida, caché, `usage`, adaptador al protocolo y `ModelUnavailable` (transitoria o no, con `Retry-After`); timeout de conexión aparte |
+| `app/resilience.py` | `Retrier` (reintentos con backoff, jitter, `Retry-After` y plazo), `CircuitBreaker` y `ResilientModel`; `ModelCircuitOpen` (`503`) |
+| `app/api_docs.py` | Contrato OpenAPI: descripción, etiquetas y errores documentados de cada ruta |
 | `app/pricing.py` | Precios por modelo y `PricedModel` |
 | `app/directory.py` | Carga y consulta de solo lectura de los empleados |
 | `app/config.py` | Configuración desde el entorno por grupos, con valores por omisión y validación al arrancar |
@@ -126,7 +140,8 @@ sequenceDiagram
     S->>A: cliente
     A->>A: valida (422: largo, historial, caracteres), enruta, recorta historial
     A->>G: run(question, history) con el modelo elegido
-    G->>M: complete(messages) hasta AGENT_MAX_STEPS
+    G->>M: complete(messages) hasta AGENT_MAX_STEPS (reintentos y circuito por modelo)
+    Note over A,M: si falla el modelo grande, se repite con el pequeño (route +fallback);<br/>con todos los circuitos abiertos, 503 con Retry-After
     G->>L: audit tool_call (args validados) u output_rejected (motivo)
     A->>A: limpia la respuesta (controles, HTML, MAX_ANSWER_CHARS)
     A->>L: audit output_sanitized si cambió algo (sin el texto)
@@ -224,7 +239,12 @@ El límite por cliente (ADR 0010) también acota el gasto.
 | `HISTORY_WINDOW` | `6` | Entero >= 0 |
 | `MODEL_MAX_TOKENS` | `300` | Entero >= 1 |
 | `MODEL_TEMPERATURE` | `0` | Número entre 0 y 2 |
-| `MODEL_TIMEOUT_SECONDS` | `30` | Número > 0 |
+| `MODEL_TIMEOUT_SECONDS` | `30` | Número > 0; también el plazo de los reintentos |
+| `MODEL_CONNECT_TIMEOUT_SECONDS` | `5` | Número > 0 |
+| `MODEL_MAX_RETRIES` | `2` | Entero >= 0 |
+| `MODEL_RETRY_BACKOFF_SECONDS` | `0.5` | Número >= 0 |
+| `CIRCUIT_FAILURE_THRESHOLD` | `5` | Entero >= 1 |
+| `CIRCUIT_OPEN_SECONDS` | `30` | Número > 0 |
 | `CACHE_TTL_SECONDS` | `0` | Entero >= 0; 0 apaga la caché |
 | `PRICES_PATH` | `data/model_prices.json` | Relativa a `product/`; debe tener los dos modelos |
 | `PORT` | `8000` | Puerto del contenedor (Render lo define) |
@@ -238,6 +258,9 @@ incluye un secreto. `product/.env.example` lista todas las variables con los sec
   de solo lectura y argumentos validados, tope de pasos y salida limpia y redactada (ADR 0013, 0014 y 0016).
 - **Auditable**: cada acción relevante deja una línea `audit` sin texto ni secretos, incluido el arranque.
 
+- **Resiliente**: reintentos ante fallas transitorias, circuit breaker por modelo, fallback del grande al pequeño
+  y `/ready` que lo refleja (ADR 0018 y 0019).
+- **Concurrente**: rutas en el pool de hilos con estado compartido bajo candado; medido con `scripts/load_test.py`.
 - **Sin estado**: escalar es correr más copias; el `pid` de `/health` y `/metrics` muestra qué copia contestó (el
   límite de peticiones es por copia).
 - **Acotado**: como máximo `AGENT_MAX_STEPS` llamadas al modelo por pregunta, cada una con tope de salida y

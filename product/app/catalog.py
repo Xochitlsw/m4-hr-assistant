@@ -2,16 +2,22 @@
 
 Con ``fake`` hay dos modelos simulados con los nombres de ``MODEL_SMALL`` y
 ``MODEL_LARGE``; con ``gateway``, dos modelos reales. Siempre van envueltos en
-:class:`app.pricing.PricedModel`, para que cada llamada diga su costo.
+:class:`app.pricing.PricedModel`, para que cada llamada diga su costo; los reales,
+además, en :class:`app.resilience.ResilientModel` (reintentos y circuit breaker, cada
+uno con su propio circuito; ADR 0018).
 """
+
+from collections.abc import Callable
 
 import httpx
 
+from app.clock import Clock, SystemClock
 from app.config import ConfigError, Settings
 from app.directory import EmployeeDirectory
 from app.gateway import GatewayModel
 from app.llm import ChatModel, FakeModel
 from app.pricing import PriceTable, PricedModel
+from app.resilience import ResilientModel
 
 
 def build_models(
@@ -48,3 +54,35 @@ def build_models(
         departments = directory.departments()
         bases = {name: FakeModel(departments) for name in names}
     return {name: PricedModel(base, name, prices) for name, base in bases.items()}
+
+
+def add_resilience(
+    models: dict[str, ChatModel],
+    settings: Settings,
+    clock: Clock | None = None,
+    on_event: Callable[..., None] | None = None,
+) -> dict[str, ChatModel]:
+    """Envuelve cada modelo real en reintentos y su propio circuit breaker.
+
+    :param models: Modelos con precio (:func:`build_models`)
+    :type models: dict[str, app.llm.ChatModel]
+    :param settings: Configuración validada
+    :type settings: app.config.Settings
+    :param clock: Reloj de los reintentos y del circuito (por omisión, el del sistema)
+    :type clock: app.clock.Clock | None
+    :param on_event: Aviso de cambios de estado de un circuito
+    :type on_event: Callable[..., None] | None
+    :return: Los mismos modelos, resilientes
+    :rtype: dict[str, app.llm.ChatModel]
+    """
+    gateway = settings.models.gateway
+    return {
+        name: ResilientModel(
+            priced,
+            gateway.resilience,
+            clock or SystemClock(),
+            timeout_seconds=gateway.timeout_seconds,
+            on_event=on_event,
+        )
+        for name, priced in models.items()
+    }

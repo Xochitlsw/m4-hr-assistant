@@ -2,7 +2,9 @@
 
 Usa un ``httpx.Client`` inyectado (las pruebas pasan uno con ``MockTransport`` y nunca
 salen a la red). Cualquier falla se convierte en :class:`ModelUnavailable`, que la API
-responde con ``502``. El token nunca aparece en los mensajes de error.
+responde con ``502``; la falla dice si es transitoria (red, ``429``, ``5xx``) y cuánto
+pide esperar el gateway, para que ``app.resilience`` decida si reintenta (ADR 0018). El
+token nunca aparece en los mensajes de error.
 """
 
 import json
@@ -20,7 +22,36 @@ FENCED_BLOCK = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
 
 class ModelUnavailable(RuntimeError):
-    """El modelo real no respondió o respondió algo que no se puede usar."""
+    """El modelo real no respondió o respondió algo que no se puede usar.
+
+    :param message: Qué falló, sin el token ni el texto de la conversación
+    :type message: str
+    :param retryable: ``True`` si la falla es transitoria y vale la pena reintentar
+    :type retryable: bool
+    :param retry_after: Segundos que pidió esperar el gateway (``Retry-After``)
+    :type retry_after: float | None
+    """
+
+    def __init__(
+        self, message: str, retryable: bool = False, retry_after: float | None = None
+    ):
+        super().__init__(message)
+        self.retryable = retryable
+        self.retry_after = retry_after
+
+
+def retry_after_seconds(response: httpx.Response) -> float | None:
+    """Segundos de ``Retry-After`` si vienen como número; si no, ``None``.
+
+    :param response: Respuesta del gateway
+    :type response: httpx.Response
+    :return: Segundos a esperar, o ``None``
+    :rtype: float | None
+    """
+    try:
+        return max(0.0, float(response.headers.get("Retry-After", "")))
+    except ValueError:
+        return None
 
 
 def gateway_url(settings: ModelSettings) -> str:
@@ -39,14 +70,19 @@ def gateway_url(settings: ModelSettings) -> str:
 
 
 def build_http_client(settings: ModelSettings) -> httpx.Client:
-    """Crea el cliente HTTP del modelo real, con el timeout configurado.
+    """Crea el cliente HTTP del modelo real, con sus timeouts.
+
+    La conexión tiene un tiempo corto aparte (``MODEL_CONNECT_TIMEOUT_SECONDS``): si el
+    gateway no acepta la conexión, se sabe pronto y se puede reintentar.
 
     :param settings: Configuración de modelos
     :type settings: app.config.ModelSettings
     :return: Un cliente que se comparte entre hilos y se cierra al apagar
     :rtype: httpx.Client
     """
-    return httpx.Client(timeout=settings.gateway.timeout_seconds)
+    gateway = settings.gateway
+    connect = min(gateway.resilience.connect_timeout_seconds, gateway.timeout_seconds)
+    return httpx.Client(timeout=httpx.Timeout(gateway.timeout_seconds, connect=connect))
 
 
 def _first_json_object(text: str) -> dict | None:
@@ -126,7 +162,19 @@ class GatewayModel:
         }
         try:
             response = self._client.post(self._url, json=body, headers=self._headers())
-            response.raise_for_status()
+        except httpx.TransportError as error:
+            raise ModelUnavailable(
+                f"gateway call failed for {self.name}: {type(error).__name__}",
+                retryable=True,
+            ) from error
+        if response.is_error:
+            status = response.status_code
+            raise ModelUnavailable(
+                f"gateway call failed for {self.name}: HTTP {status}",
+                retryable=status == 429 or status >= 500,
+                retry_after=retry_after_seconds(response),
+            )
+        try:
             data = response.json()
             content = data["choices"][0]["message"]["content"]
             usage = data["usage"]

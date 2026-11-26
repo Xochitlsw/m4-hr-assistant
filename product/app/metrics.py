@@ -6,7 +6,7 @@ import threading
 from collections import deque
 from collections.abc import Iterable, Sequence
 
-EXCLUDED_PATHS = frozenset({"/health", "/metrics"})
+EXCLUDED_PATHS = frozenset({"/health", "/ready", "/metrics"})
 LATENCY_WINDOW = 1000
 COST_DECIMALS = 8
 

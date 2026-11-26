@@ -133,6 +133,14 @@ def test_the_blueprint_builds_the_product_folder_safely():
     assert variables["HIDE_INPUTS"]["value"] == "redact"
 
 
+def test_development_and_production_trace_to_different_projects():
+    [service] = yaml.safe_load(BLUEPRINT.read_text(encoding="utf-8"))["services"]
+    variables = {item["key"]: item.get("value") for item in service["envVars"]}
+    assert variables["LANGSMITH_PROJECT"] == "m4-hr-assistant-prod"
+    template = (PRODUCT / ".env.example").read_text(encoding="utf-8").splitlines()
+    assert "LANGSMITH_PROJECT=m4-hr-assistant-dev" in template
+
+
 def test_runtime_dependencies_are_pinned_hashed_and_free_of_dev_tools():
     packages = locked(RUNTIME_LOCK)
     assert RUNTIME <= set(packages)

@@ -31,6 +31,8 @@ class Completion:
     :type cached: bool
     :param cost_usd: Costo de la llamada en USD (lo calcula ``app.pricing``)
     :type cost_usd: float
+    :param attempts: Intentos que hicieron falta (los pone ``app.resilience``)
+    :type attempts: int
     """
 
     text: str
@@ -38,6 +40,7 @@ class Completion:
     output_tokens: int
     cached: bool = False
     cost_usd: float = 0.0
+    attempts: int = 1
 
 
 class ChatModel(Protocol):

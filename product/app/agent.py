@@ -50,12 +50,15 @@ class Usage:
     :type cached_calls: int
     :param cost_usd: Costo en USD (las cacheadas no cuestan)
     :type cost_usd: float
+    :param retries: Reintentos que hicieron falta en todas las llamadas
+    :type retries: int
     """
 
     input_tokens: int = 0
     output_tokens: int = 0
     cached_calls: int = 0
     cost_usd: float = 0.0
+    retries: int = 0
 
     def add(self, completion: Completion) -> "Usage":
         """Suma una llamada al modelo.
@@ -70,6 +73,7 @@ class Usage:
             output_tokens=self.output_tokens + completion.output_tokens,
             cached_calls=self.cached_calls + int(completion.cached),
             cost_usd=self.cost_usd + completion.cost_usd,
+            retries=self.retries + completion.attempts - 1,
         )
 
 
