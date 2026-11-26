@@ -66,7 +66,10 @@ regla; la comprueban las pruebas del producto.
 - **Falsos negativos.** Un detector por patrones no ve lo que no tiene forma: un domicilio, un nombre de
   familiar, un diagnóstico médico o un dato en un formato no previsto. Con `redact` ese texto llega a LangSmith;
   con `true` no. Es el precio de tener trazas útiles.
-- **Falsos positivos.** Un número de 10 u 11 dígitos sin relación (un folio) puede redactarse como teléfono o NSS.
+- **Falsos positivos.** Un número de 10 u 11 dígitos sin relación (un folio) puede redactarse como teléfono o NSS:
+  «El folio de mi trámite es 1234567890» sale como «… es [REDACTED:PHONE]». Es inevitable con un detector por
+  patrones, porque un teléfono de México también son 10 dígitos; `tests/test_privacy.py` lo deja escrito como
+  límite conocido.
   Para la persona es una molestia, no una fuga.
 - **El proveedor del modelo** recibe el texto redactado, pero ve los resultados de las herramientas (datos del
   directorio), como antes.

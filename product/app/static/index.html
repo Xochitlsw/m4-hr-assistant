@@ -164,6 +164,13 @@
       if (status === 401) {
         return "Clave inválida. Revisa la clave de acceso.";
       }
+      if (status === 429 && String(detail).includes("budget")) {
+        return "Se agotó el presupuesto de hoy para esta clave. Vuelve a intentar mañana.";
+      }
+      if (status === 429 && String(detail).includes("authentication")) {
+        return "Demasiados intentos con una clave inválida; espera "
+          + (retryAfter || "unos") + " segundos.";
+      }
       if (status === 429) {
         return "Demasiadas preguntas; espera " + (retryAfter || "unos") + " segundos.";
       }

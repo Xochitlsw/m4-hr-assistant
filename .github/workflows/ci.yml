@@ -116,6 +116,14 @@ jobs:
           if docker run --rm m4-hr-assistant:ci python -c "import pytest"; then
             echo "pytest no debe estar en la imagen"; exit 1
           fi
+      - name: La app no puede escribir su código ni sus datos (mínimo privilegio)
+        run: |
+          if docker run --rm m4-hr-assistant:ci sh -c "touch /app/app/escritura"; then
+            echo "el usuario de la app pudo escribir en /app/app"; exit 1
+          fi
+          if docker run --rm m4-hr-assistant:ci sh -c "touch /app/data/escritura"; then
+            echo "el usuario de la app pudo escribir en /app/data"; exit 1
+          fi
       - name: Arrancar la imagen y esperar su HEALTHCHECK
         run: |
           docker run -d --name hr -p 8000:8000 \

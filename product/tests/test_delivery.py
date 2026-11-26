@@ -90,6 +90,12 @@ def test_the_factory_job_runs_the_factory_checks_from_the_root():
         assert f"python -m verification {step}" in commands
 
 
+def test_the_docker_job_proves_the_app_cannot_write_its_code_or_data():
+    commands = run_lines(workflow()["jobs"]["docker"])
+    for folder in ("/app/app", "/app/data"):
+        assert f"touch {folder}/" in commands
+
+
 def test_the_security_job_audits_dependencies_and_scans_for_secrets():
     job = workflow()["jobs"]["security"]
     commands = run_lines(job)

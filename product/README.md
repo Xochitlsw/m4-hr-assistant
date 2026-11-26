@@ -71,8 +71,9 @@ responde o se agota la cuota, `POST /ask` responde `502 {"detail": "model unavai
 | `POST /ask` | `X-API-Key` | Cuerpo `{"question": "...", "history": [...]}`; responde `answer`, `steps`, `tools_used`, `input_tokens`, `output_tokens`, `request_id`, `model`, `route`, `cached_calls` y `cost_usd` |
 | `GET /metrics` | `X-API-Key` | Peticiones, `error_rate`, latencia p50/p95, tokens, SLO y `cost_usd` acumulado de este proceso |
 
-Errores: `401 {"detail": "invalid or missing API key"}`; `429 {"detail": "rate limit exceeded"}` con
-`Retry-After`; `413 {"detail": "request body too large"}` si el cuerpo pasa de `MAX_BODY_BYTES` (antes de leerlo
+Errores: `401 {"detail": "invalid or missing API key"}`; `429` con `Retry-After` y uno de tres motivos
+(`too many failed authentication attempts`, `daily budget exceeded` o `rate limit exceeded`);
+`413 {"detail": "request body too large"}` si el cuerpo pasa de `MAX_BODY_BYTES` (antes de leerlo
 y antes de revisar la clave); `422` si la pregunta está vacía o es demasiado larga, si el historial trae más de
 `MAX_HISTORY_MESSAGES` mensajes o uno pasa del largo de su rol, o si hay caracteres de control o marcas
 bidireccionales; `400 {"detail": "request looks like a prompt injection; ask about employees"}` si la pregunta
@@ -87,6 +88,16 @@ un UUID.
 - **Clave por cliente**: `API_KEYS=cliente:clave,cliente2:clave2`. La clave se compara con `hmac.compare_digest` y
   nunca se escribe en el log, la traza ni un error. Si `API_KEYS` está mal formada, el producto no arranca y el
   mensaje dice qué entrada falla y su largo, nunca su valor.
+- **Controles completos**: [`doc/security.md`](doc/security.md) lista los 19 controles con su riesgo (OWASP LLM
+  2025), dónde están, cómo se prueban y su evidencia, más el modelo de amenazas, la matriz de mínimo privilegio y
+  la rotación de secretos. `scripts/security_check.py <url>` manda 13 casos de ataque y compara lo esperado con lo
+  obtenido (`doc/evidence/security-check.txt`).
+- **Claves fallidas por origen** (ADR 0017): más de `AUTH_FAILURES_PER_MINUTE` claves faltantes o equivocadas
+  desde un origen en un minuto responden `429` **antes** de comparar la clave. Detrás de Render, el origen es el
+  último valor de `X-Forwarded-For` (`TRUSTED_PROXY_HOPS=1`). La IP nunca va al log: va una huella HMAC por
+  proceso.
+- **Presupuesto diario por cliente** (OWASP LLM10): al gastar `CLIENT_DAILY_BUDGET_USD` en un día UTC, el cliente
+  recibe `429` hasta la medianoche UTC. En producción no se puede apagar.
 - **Límite por cliente**: más de `RATE_LIMIT_PER_MINUTE` preguntas en un minuto responden `429` con `Retry-After`.
   El límite es por proceso.
 - **Validación de entradas**: el cuerpo tiene tope (`413`); la pregunta, de 1 a `MAX_QUESTION_CHARS` caracteres;
@@ -155,6 +166,9 @@ Todas están en [`.env.example`](.env.example), con los secretos vacíos.
 | `ENVIRONMENT` | `development` | `development` o `production` (aplica las reglas de compliance) |
 | `API_KEYS` | (sin valor) | Clientes y claves, `cliente:clave,...`. **Secreto** |
 | `RATE_LIMIT_PER_MINUTE` | `30` | Preguntas por cliente por minuto (entero >= 1) |
+| `AUTH_FAILURES_PER_MINUTE` | `10` | Claves fallidas por origen por minuto antes de responder `429` (entero >= 1) |
+| `TRUSTED_PROXY_HOPS` | `0` | Proxies de confianza delante de la app: `0` en local, `1` en Render (entero >= 0) |
+| `CLIENT_DAILY_BUDGET_USD` | `1.0` | Gasto máximo por cliente por día UTC en USD; `0` lo apaga (producción exige más de 0) |
 | `MODEL_PROVIDER` | `fake` | `fake` (simulado) o `gateway` (Workers AI vía AI Gateway) |
 | `AGENT_MAX_STEPS` | `3` | Tope de vueltas del agente (entero >= 1) |
 | `MAX_QUESTION_CHARS` | `2000` | Largo máximo de la pregunta y de cada mensaje `user` del historial (entero >= 1) |
@@ -271,6 +285,9 @@ Alternativa: escribe la clave en `SMOKE_API_KEY` dentro de `.env` (en tu editor)
 `uv run --env-file .env python scripts/smoke.py https://m4-hr-assistant.onrender.com`. La misma variable sirve para
 la verificación de la fábrica, desde la raíz: `uv run python -m verification production <url>`. Un argumento de
 más (por ejemplo, la clave después de la URL) se rechaza.
+
+Para los controles de seguridad, con la misma variable: `uv run python scripts/security_check.py <url>` (13
+casos; deja tu origen bloqueado un minuto al final, a propósito). Detalle en `doc/security.md`.
 
 Imprime `[OK]` o `[FAIL]` para `/health` (200), `/ask` sin clave (401) y `/ask` con clave (200). El plan gratuito
 duerme el servicio tras 15 minutos sin uso; la primera petición puede tardar hasta un minuto.

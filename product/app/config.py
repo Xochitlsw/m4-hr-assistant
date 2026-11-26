@@ -44,6 +44,9 @@ DEFAULTS = {
     "ENVIRONMENT": "development",
     "API_KEYS": "",
     "RATE_LIMIT_PER_MINUTE": "30",
+    "AUTH_FAILURES_PER_MINUTE": "10",
+    "TRUSTED_PROXY_HOPS": "0",
+    "CLIENT_DAILY_BUDGET_USD": "1.0",
 }
 BOOLEANS = {"true": True, "false": False}
 # HIDE_INPUTS / HIDE_OUTPUTS: true oculta, redact redacta y false manda en claro
@@ -194,11 +197,21 @@ class SecuritySettings:
     :type api_keys: tuple[tuple[str, str], ...]
     :param rate_limit_per_minute: Peticiones a ``/ask`` por cliente por minuto
     :type rate_limit_per_minute: int
+    :param auth_failures_per_minute: Claves fallidas por origen por minuto antes de
+        responder ``429`` sin comparar la clave
+    :type auth_failures_per_minute: int
+    :param trusted_proxy_hops: Proxies de confianza delante de la aplicación (Render: 1)
+    :type trusted_proxy_hops: int
+    :param daily_budget_usd: Presupuesto de costo por cliente por día UTC; 0 lo apaga
+    :type daily_budget_usd: float
     """
 
     environment: str
     api_keys: tuple[tuple[str, str], ...] = field(repr=False)
     rate_limit_per_minute: int = 30
+    auth_failures_per_minute: int = 10
+    trusted_proxy_hops: int = 0
+    daily_budget_usd: float = 1.0
 
     @property
     def clients(self) -> tuple[str, ...]:
@@ -459,6 +472,11 @@ def _security(env: Mapping[str, str]) -> SecuritySettings:
         environment=environment,
         api_keys=parse_api_keys(env.get("API_KEYS", DEFAULTS["API_KEYS"])),
         rate_limit_per_minute=_integer(env, "RATE_LIMIT_PER_MINUTE", 1),
+        auth_failures_per_minute=_integer(env, "AUTH_FAILURES_PER_MINUTE", 1),
+        trusted_proxy_hops=_integer(env, "TRUSTED_PROXY_HOPS", 0),
+        daily_budget_usd=_number(
+            env, "CLIENT_DAILY_BUDGET_USD", lambda value: value >= 0, "a number >= 0"
+        ),
     )
 
 

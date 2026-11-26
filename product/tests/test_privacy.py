@@ -72,6 +72,12 @@ def test_every_langsmith_key_kind_is_a_secret(kind):
     assert scan(f"mi clave {key}").secrets == {"LANGSMITH_KEY": 1}
 
 
+def test_a_ten_digit_folio_is_a_known_false_positive():
+    """Límite documentado en el ADR 0014: 10 dígitos se leen como un teléfono."""
+    found = scan("El folio de mi trámite es 1234567890")
+    assert found.text == "El folio de mi trámite es [REDACTED:PHONE]"
+
+
 def test_a_number_that_fails_luhn_is_not_a_card():
     assert "CARD" not in scan("Folio 4111 1111 1111 1112").pii
 

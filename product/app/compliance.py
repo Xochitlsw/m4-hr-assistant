@@ -41,6 +41,8 @@ def violations(settings: Settings) -> list[str]:
     for name, ceiling, read in CEILINGS:
         if read(settings) > ceiling:
             found.append(f"{name} must be at most {ceiling} in production")
+    if settings.security.daily_budget_usd <= 0:
+        found.append("CLIENT_DAILY_BUDGET_USD must be greater than 0 in production")
     observability = settings.observability
     modes = (observability.inputs_privacy, observability.outputs_privacy)
     if observability.tracing_requested and "clear" in modes:

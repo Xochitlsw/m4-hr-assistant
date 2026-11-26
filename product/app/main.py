@@ -40,7 +40,14 @@ from app.privacy import SecretFound, merge_counts, scan
 from app.routing import Router, apply_window
 from app.sanitize import BlockedRequest, sanitize_answer
 from app.schemas import AskResponse, build_ask_request
-from app.security import KeyStore, RateLimiter
+from app.security import (
+    DailyBudget,
+    FailureLimiter,
+    KeyStore,
+    OriginFingerprint,
+    RateLimiter,
+    client_origin,
+)
 from app.tracing import Tracer
 
 PAGE = Path(__file__).resolve().parent / "static" / "index.html"
@@ -366,6 +373,9 @@ def startup_summary(settings: Settings) -> dict:
         "models": {"small": settings.models.small, "large": settings.models.large},
         "clients": list(settings.security.clients),
         "rate_limit_per_minute": settings.security.rate_limit_per_minute,
+        "auth_failures_per_minute": settings.security.auth_failures_per_minute,
+        "trusted_proxy_hops": settings.security.trusted_proxy_hops,
+        "daily_budget_usd": settings.security.daily_budget_usd,
         "agent_max_steps": settings.agent_max_steps,
         "limits": asdict(settings.limits),
         "tracing_enabled": observability.tracing_enabled,
@@ -390,44 +400,90 @@ def _lifespan(client: httpx.Client | None, on_start: Callable[[], None]) -> Call
     return lifespan
 
 
-def _access_dependencies(
-    settings: Settings, observability: Observability
-) -> tuple[Callable, Callable]:
-    """Dependencias de FastAPI: clave por cliente (401) y límite de peticiones (429).
+@dataclass(frozen=True)
+class Access:
+    """Control de acceso de la API (ADR 0010 y 0017).
+
+    :param require_client: Dependencia: cliente de la clave; ``401`` o ``429`` si el
+        origen acumula claves fallidas
+    :type require_client: Callable
+    :param limit_rate: Dependencia: además, límite por minuto y presupuesto diario
+    :type limit_rate: Callable
+    :param budget: Presupuesto diario; ``/ask`` le suma el costo de cada respuesta
+    :type budget: app.security.DailyBudget
+    """
+
+    require_client: Callable
+    limit_rate: Callable
+    budget: DailyBudget
+
+
+def _too_many(detail: str, retry_after: int) -> HTTPException:
+    """Un ``429`` con su motivo y ``Retry-After``."""
+    return HTTPException(
+        status_code=429, detail=detail, headers={"Retry-After": str(retry_after)}
+    )
+
+
+def _access_dependencies(settings: Settings, observability: Observability) -> Access:
+    """Clave por cliente (401); fallas por origen, límite y presupuesto (429).
 
     Corren antes de validar los campos del cuerpo. Auditan los rechazos sin escribir
-    la clave presentada.
+    la clave presentada ni la IP: el origen va como huella HMAC (ADR 0017).
 
     :param settings: Configuración validada
     :type settings: app.config.Settings
     :param observability: Reloj y log
     :type observability: Observability
-    :return: ``(require_client, limit_rate)``
-    :rtype: tuple[Callable, Callable]
+    :return: Las dependencias y el presupuesto
+    :rtype: Access
     """
-    keys = KeyStore(settings.security.api_keys)
-    limiter = RateLimiter(settings.security.rate_limit_per_minute, observability.clock)
+    security = settings.security
+    keys = KeyStore(security.api_keys)
+    clock = observability.clock
+    limiter = RateLimiter(security.rate_limit_per_minute, clock)
+    failures = FailureLimiter(security.auth_failures_per_minute, clock)
+    budget = DailyBudget(security.daily_budget_usd, clock)
+    fingerprint = OriginFingerprint()
     log = observability.logger
 
     def require_client(
         request: Request, key: str | None = Security(API_KEY_SCHEME)
     ) -> str:
-        """Devuelve el cliente de la clave, o responde 401."""
+        """Devuelve el cliente de la clave, o responde 429 (origen bloqueado) o 401."""
+        origin = client_origin(
+            request.headers.get("X-Forwarded-For"),
+            request.client.host if request.client else None,
+            security.trusted_proxy_hops,
+        )
+        retry_after = failures.retry_after(origin)
+        if retry_after is not None:
+            log.emit(
+                "audit",
+                request.state.request_id,
+                action="auth_throttled",
+                origin=fingerprint(origin),
+                path=request.url.path,
+                retry_after=retry_after,
+            )
+            raise _too_many("too many failed authentication attempts", retry_after)
         client = keys.client_for(key)
         if client is None:
+            failures.record(origin)
             log.emit(
                 "audit",
                 request.state.request_id,
                 action="auth_failed",
                 reason="invalid" if key else "missing",
                 path=request.url.path,
+                origin=fingerprint(origin),
             )
             raise HTTPException(status_code=401, detail="invalid or missing API key")
         request.state.client = client
         return client
 
     def limit_rate(request: Request, client: str = Depends(require_client)) -> str:
-        """Deja pasar al cliente si no superó su límite; si no, responde 429."""
+        """Deja pasar al cliente dentro de su límite y su presupuesto; si no, 429."""
         retry_after = limiter.hit(client)
         if retry_after is not None:
             log.emit(
@@ -437,14 +493,21 @@ def _access_dependencies(
                 client=client,
                 retry_after=retry_after,
             )
-            raise HTTPException(
-                status_code=429,
-                detail="rate limit exceeded",
-                headers={"Retry-After": str(retry_after)},
+            raise _too_many("rate limit exceeded", retry_after)
+        retry_after = budget.retry_after(client)
+        if retry_after is not None:
+            log.emit(
+                "audit",
+                request.state.request_id,
+                action="budget_exceeded",
+                client=client,
+                budget_usd=budget.limit_usd,
+                retry_after=retry_after,
             )
+            raise _too_many("daily budget exceeded", retry_after)
         return client
 
-    return require_client, limit_rate
+    return Access(require_client, limit_rate, budget)
 
 
 def _add_observability(app: FastAPI, observability: Observability) -> None:
@@ -524,10 +587,10 @@ def _add_routes(
     settings: Settings,
     service: AskService,
     metrics: Metrics,
-    access: tuple[Callable, Callable],
+    access: Access,
 ) -> None:
     """Rutas de la API: página y salud sin clave; métricas y preguntas con clave."""
-    require_client, limit_rate = access
+    require_client, limit_rate = access.require_client, access.limit_rate
     ask_request = build_ask_request(settings)
     page = PAGE.read_text(encoding="utf-8")
 
@@ -556,9 +619,11 @@ def _add_routes(
     ) -> AskResponse:
         """Enruta la pregunta, corre el agente y responde con modelo, ruta y costo."""
         history = [turn.model_dump() for turn in body.history]
-        return service.answer(
+        response = service.answer(
             body.question, history, request.state.request_id, client
         )
+        access.budget.add(client, response.cost_usd)
+        return response
 
 
 def create_app(

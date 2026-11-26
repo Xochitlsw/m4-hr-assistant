@@ -20,6 +20,10 @@ services:
         value: production
       - key: MODEL_PROVIDER
         value: gateway
+      # Un proxy de Render delante de la app: el origen es el último valor de
+      # X-Forwarded-For (ADR 0017).
+      - key: TRUSTED_PROXY_HOPS
+        value: "1"
       # Trazas redactadas (ADR 0014): si se encienden, LangSmith recibe el texto con los
       # datos personales y los secretos reemplazados por [REDACTED:TIPO].
       - key: HIDE_INPUTS

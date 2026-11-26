@@ -26,6 +26,9 @@ def test_production_refuses_unsafe_settings():
             "HIDE_OUTPUTS": "false",
         },
         "MAX_BODY_BYTES must be at most 1048576": {"MAX_BODY_BYTES": "2000000"},
+        "CLIENT_DAILY_BUDGET_USD must be greater than 0": {
+            "CLIENT_DAILY_BUDGET_USD": "0"
+        },
         "MAX_HISTORY_MESSAGES must be at most 50": {"MAX_HISTORY_MESSAGES": "51"},
         "AGENT_MAX_STEPS must be at most 5": {"AGENT_MAX_STEPS": "6"},
         "MODEL_MAX_TOKENS must be at most 1024": {"MODEL_MAX_TOKENS": "4096"},

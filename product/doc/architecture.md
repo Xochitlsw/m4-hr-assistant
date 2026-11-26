@@ -31,6 +31,10 @@ Decisiones:
   fijadas con hashes y cadena de suministro.
 - [ADR 0016](adr/0016-injection-audit-and-http-hardening.md): prompt injection, auditoría completa, cabeceras de
   seguridad y topes de producción.
+- [ADR 0017](adr/0017-request-origin-auth-throttling-and-budget.md): origen de las peticiones, límite de claves
+  fallidas y presupuesto diario.
+
+Controles de seguridad, amenazas y mínimo privilegio: [`security.md`](security.md).
 
 ## Componentes
 
@@ -69,7 +73,7 @@ flowchart LR
 | Módulo | Responsabilidad |
 | --- | --- |
 | `app/main.py` | `create_app()` con dependencias inyectadas; middleware; autenticación y límite como dependencias; rutas `/`, `/health`, `/ask` y `/metrics`; `AskService`; `502` si el modelo falla |
-| `app/security.py` | `KeyStore` (cliente de una clave con `hmac.compare_digest`) y `RateLimiter` (ventana deslizante por cliente) |
+| `app/security.py` | `KeyStore` (cliente de una clave con `hmac.compare_digest`), `RateLimiter` (por cliente), `FailureLimiter` (claves fallidas por origen), `DailyBudget` (costo por cliente y día), `client_origin` y `OriginFingerprint` (huella HMAC del origen) |
 | `app/compliance.py` | Reglas de producción: con `ENVIRONMENT=production` la aplicación no arranca si alguna falla |
 | `app/routing.py` | Regla de enrutamiento (modelo y `route`) y ventana de historial |
 | `app/schemas.py` | Modelos Pydantic de la API: cuerpo de `/ask` con sus límites (largo de la pregunta, mensajes del historial y largo por rol, sin caracteres prohibidos) y `AskResponse` |
@@ -195,6 +199,9 @@ El límite por cliente (ADR 0010) también acota el gasto.
 | `ENVIRONMENT` | `development` | `development` o `production` (aplica las reglas de compliance) |
 | `API_KEYS` | (vacía) | Secreto; `cliente:clave,...`; en producción, claves de 16 caracteres o más |
 | `RATE_LIMIT_PER_MINUTE` | `30` | Entero >= 1; peticiones a `/ask` por cliente por minuto |
+| `AUTH_FAILURES_PER_MINUTE` | `10` | Entero >= 1; claves fallidas por origen por minuto |
+| `TRUSTED_PROXY_HOPS` | `0` | Entero >= 0; `1` en Render |
+| `CLIENT_DAILY_BUDGET_USD` | `1.0` | Número >= 0; en producción, mayor que 0 |
 | `MODEL_PROVIDER` | `fake` | `fake` o `gateway`; en producción, `gateway` |
 | `AGENT_MAX_STEPS` | `3` | Entero >= 1 |
 | `MAX_QUESTION_CHARS` | `2000` | Entero >= 1; también tope de cada mensaje `user` del historial |
@@ -240,7 +247,8 @@ incluye un secreto. `product/.env.example` lista todas las variables con los sec
   sin caracteres de control ni HTML y con largo máximo (ADR 0013).
 - **Datos personales fuera del modelo y de las trazas**: se redactan antes del modelo, en la respuesta y en
   LangSmith; un secreto en la petición la bloquea (ADR 0014).
-- **Acceso controlado**: clave por cliente comparada en tiempo constante; la clave nunca se registra.
+- **Acceso controlado**: clave por cliente comparada en tiempo constante; la clave nunca se registra; las fallas
+  se limitan por origen antes de comparar y cada cliente tiene presupuesto diario (ADR 0017).
 - **Rastreable sin exponer datos**: el log y las trazas por omisión no llevan el texto de preguntas ni respuestas.
 - **Costo visible**: cada respuesta y `/metrics` dicen cuánto costó.
 - **Seguro al desplegar**: producción no arranca si incumple una regla; Render publica solo con el CI en verde.
