@@ -160,7 +160,7 @@
       conversation.scrollTop = conversation.scrollHeight;
     }
 
-    function errorText(status, retryAfter) {
+    function errorText(status, retryAfter, detail) {
       if (status === 401) {
         return "Clave inválida. Revisa la clave de acceso.";
       }
@@ -170,6 +170,10 @@
       if (status === 422) {
         return "La pregunta está vacía, es demasiado larga o tiene caracteres no "
           + "permitidos. Revísala e intenta de nuevo.";
+      }
+      if (status === 400 && String(detail).includes("injection")) {
+        return "Tu pregunta parece una instrucción para el asistente, no una consulta. "
+          + "Pregunta por un empleado o un departamento.";
       }
       if (status === 400) {
         return "Tu pregunta parece incluir una clave o un secreto. Quítalo y vuelve a "
@@ -203,7 +207,13 @@
         if (!response.ok) {
           const supportId = response.headers.get("X-Request-ID");
           const retryAfter = response.headers.get("Retry-After");
-          const message = errorText(response.status, retryAfter);
+          let detail = "";
+          try {
+            detail = (await response.json()).detail || "";
+          } catch (error) {
+            // Sin cuerpo JSON el mensaje depende solo del código.
+          }
+          const message = errorText(response.status, retryAfter, detail);
           addMessage("error", message, null, supportId);
           return;
         }

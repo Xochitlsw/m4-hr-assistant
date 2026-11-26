@@ -5,7 +5,9 @@ observabilidad y cliente HTTP) para que las pruebas inyecten las suyas.
 ``uvicorn app.main:app`` usa la aplicación armada con las variables de entorno del
 proceso. Antes de armar nada aplica las reglas de producción (``app.compliance``).
 Las entradas se validan antes de llegar al agente (tope del cuerpo y ``app.schemas``)
-y la respuesta del modelo se limpia antes de salir (``app.sanitize``; ADR 0013).
+y la respuesta del modelo se limpia antes de salir (``app.sanitize``; ADR 0013). La
+inyección y los secretos bloquean con ``400``, se auditan las acciones relevantes y toda
+respuesta lleva cabeceras de seguridad (ADR 0014 y 0016).
 """
 
 import os
@@ -13,7 +15,7 @@ import re
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import httpx
@@ -26,21 +28,25 @@ from app.agent import CAP_REACHED, Agent, AgentResult
 from app.body_limit import BodySizeLimit
 from app.catalog import build_models
 from app.clock import Clock, SystemClock
-from app.config import Settings, load_settings
+from app.config import ConfigError, Settings, load_settings
 from app.directory import EmployeeDirectory
 from app.gateway import ModelUnavailable, build_http_client
+from app.headers import add_security_headers
+from app.injection import InjectionFound, detect_injection, merge_rules
 from app.llm import ChatModel
 from app.logs import EventLogger
 from app.metrics import Metrics
 from app.privacy import SecretFound, merge_counts, scan
 from app.routing import Router, apply_window
-from app.sanitize import sanitize_answer
+from app.sanitize import BlockedRequest, sanitize_answer
 from app.schemas import AskResponse, build_ask_request
 from app.security import KeyStore, RateLimiter
 from app.tracing import Tracer
 
 PAGE = Path(__file__).resolve().parent / "static" / "index.html"
 REQUEST_ID_HEADER = "X-Request-ID"
+# Respuestas que se auditan como request_rejected, con su motivo.
+REJECTED = {413: "body_too_large", 422: "invalid_input"}
 SAFE_REQUEST_ID = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 # auto_error=False: el 401 lo arma la aplicación con el texto de la especificación.
 API_KEY_SCHEME = APIKeyHeader(
@@ -134,8 +140,9 @@ class AskService:
     ) -> AskResponse:
         """Responde una pregunta y deja su rastro sin guardar el texto ni la clave.
 
-        Antes del modelo, un secreto en la pregunta o el historial bloquea la petición
-        (``secret_blocked``) y los datos personales se redactan (``pii_detected``).
+        Antes del modelo, una inyección (``injection_blocked``) o un secreto
+        (``secret_blocked``) en la pregunta o el historial bloquean la petición, y los
+        datos personales se redactan (``pii_detected``).
         Audita cada herramienta (``tool_call``), cada respuesta del modelo fuera del
         protocolo (``output_rejected``, con su motivo), la limpieza de la respuesta
         (``output_sanitized``, con los cambios) y su redacción (``pii_detected``);
@@ -152,7 +159,8 @@ class AskService:
         :return: La respuesta de la API, con modelo, ruta y costo
         :rtype: app.schemas.AskResponse
         :raises app.gateway.ModelUnavailable: Si el modelo real falla
-        :raises app.privacy.SecretFound: Si la pregunta o el historial traen un secreto
+        :raises app.sanitize.BlockedRequest: Si la pregunta o el historial traen una
+            inyección o un secreto
         """
         question, history = self._screen(question, history, request_id, client)
         decision = self._router.choose(question)
@@ -231,32 +239,37 @@ class AskService:
     def _audit_findings(
         self, action: str, request_id: str, client: str, findings: dict
     ) -> None:
-        """Audita, por lugar, los tipos encontrados y cuántos; nunca los valores.
+        """Audita, por lugar, lo encontrado; nunca los valores ni el texto.
 
-        :param action: ``pii_detected`` o ``secret_blocked``
+        :param action: ``pii_detected``, ``secret_blocked`` o ``injection_blocked``
         :type action: str
         :param request_id: Id de la petición
         :type request_id: str
         :param client: Cliente autenticado
         :type client: str
-        :param findings: ``{lugar: {tipo: cantidad}}``; los lugares vacíos no se auditan
+        :param findings: ``{lugar: {tipo: cantidad}}`` o, para la inyección,
+            ``{lugar: [reglas]}``; los lugares vacíos no se auditan
         :type findings: dict
         """
-        for location, types in findings.items():
-            if types:
+        field = "rules" if action == "injection_blocked" else "types"
+        for location, found in findings.items():
+            if found:
                 self._observability.logger.emit(
                     "audit",
                     request_id,
                     action=action,
                     client=client,
                     location=location,
-                    types=types,
+                    **{field: found},
                 )
 
     def _screen(
         self, question: str, history: list[dict], request_id: str, client: str
     ) -> tuple[str, list[dict]]:
-        """Revisa la entrada antes del modelo (ADR 0014).
+        """Revisa la entrada antes del modelo: inyección, secretos y datos personales.
+
+        La inyección (ADR 0016) y los secretos (ADR 0014) bloquean; los datos
+        personales se redactan.
 
         :param question: Pregunta ya validada
         :type question: str
@@ -268,8 +281,18 @@ class AskService:
         :type client: str
         :return: La pregunta y el historial con los datos personales redactados
         :rtype: tuple[str, list[dict]]
+        :raises app.injection.InjectionFound: Si alguno parece una inyección
         :raises app.privacy.SecretFound: Si alguno trae un secreto
         """
+        rules = {
+            "question": list(detect_injection(question)),
+            "history": list(
+                merge_rules([detect_injection(turn["content"]) for turn in history])
+            ),
+        }
+        if any(rules.values()):
+            self._audit_findings("injection_blocked", request_id, client, rules)
+            raise InjectionFound()
         asked = scan(question)
         turns = [scan(turn["content"]) for turn in history]
         secrets = {
@@ -328,11 +351,38 @@ class AskService:
         return replace(result, answer=text)
 
 
-def _lifespan(client: httpx.Client | None) -> Callable:
-    """Ciclo de vida: al apagar cierra el cliente HTTP, si la aplicación lo creó."""
+def startup_summary(settings: Settings) -> dict:
+    """Configuración que se audita al arrancar: nombres y valores, nunca secretos.
+
+    :param settings: Configuración validada
+    :type settings: app.config.Settings
+    :return: Campos del evento ``startup``
+    :rtype: dict
+    """
+    observability = settings.observability
+    return {
+        "environment": settings.security.environment,
+        "model_provider": settings.models.provider,
+        "models": {"small": settings.models.small, "large": settings.models.large},
+        "clients": list(settings.security.clients),
+        "rate_limit_per_minute": settings.security.rate_limit_per_minute,
+        "agent_max_steps": settings.agent_max_steps,
+        "limits": asdict(settings.limits),
+        "tracing_enabled": observability.tracing_enabled,
+        "trace_privacy": {
+            "inputs": observability.inputs_privacy,
+            "outputs": observability.outputs_privacy,
+        },
+    }
+
+
+def _lifespan(client: httpx.Client | None, on_start: Callable[[], None]) -> Callable:
+    """Ciclo de vida: al arrancar audita la configuración (``startup``); al apagar
+    cierra el cliente HTTP, si la aplicación lo creó."""
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        on_start()
         yield
         if client is not None:
             client.close()
@@ -419,6 +469,15 @@ def _add_observability(app: FastAPI, observability: Observability) -> None:
         latency_ms = round((observability.clock.monotonic() - start) * 1000, 3)
         response.headers[REQUEST_ID_HEADER] = request_id
         path = request.url.path
+        if response.status_code in REJECTED:
+            log.emit(
+                "audit",
+                request_id,
+                action="request_rejected",
+                client=getattr(request.state, "client", None),
+                reason=REJECTED[response.status_code],
+                path=path,
+            )
         observability.metrics.record_request(path, response.status_code, latency_ms)
         log.emit(
             "request",
@@ -447,17 +506,17 @@ def _add_observability(app: FastAPI, observability: Observability) -> None:
         )
 
 
-def _add_secret_handler(app: FastAPI) -> None:
-    """Un secreto en la petición responde ``400`` (ya auditado como ``secret_blocked``).
+def _add_blocked_handler(app: FastAPI) -> None:
+    """Una inyección o un secreto en la petición responden ``400`` (ya auditados).
 
     :param app: La aplicación
     :type app: fastapi.FastAPI
     """
 
-    @app.exception_handler(SecretFound)
-    async def secret_found(_request: Request, _error: SecretFound):
-        """La pregunta o el historial traen un secreto: no llegan al modelo."""
-        return JSONResponse(status_code=400, content={"detail": SecretFound.DETAIL})
+    @app.exception_handler(BlockedRequest)
+    async def blocked(_request: Request, error: BlockedRequest):
+        """La pregunta o el historial no llegan al modelo; el cuerpo dice por qué."""
+        return JSONResponse(status_code=400, content={"detail": error.DETAIL})
 
 
 def _add_routes(
@@ -532,7 +591,22 @@ def create_app(
     """
     if settings is None:
         settings = load_settings()
-    compliance.enforce(settings)
+    try:
+        compliance.enforce(settings)
+    except ConfigError:
+        logger = (
+            observability.logger
+            if observability is not None
+            else EventLogger(settings.observability.service_name, SystemClock())
+        )
+        logger.emit(
+            "audit",
+            None,
+            action="startup_refused",
+            environment=settings.security.environment,
+            violations=compliance.violations(settings),
+        )
+        raise
     if directory is None:
         directory = EmployeeDirectory.load(settings.employees_path)
     if observability is None:
@@ -546,15 +620,24 @@ def create_app(
         title="HR Assistant",
         version="1.0.0",
         description="Answers questions about employees from the HR directory.",
-        lifespan=_lifespan(owned_client),
+        redoc_url=None,
+        lifespan=_lifespan(
+            owned_client,
+            lambda: observability.logger.emit(
+                "audit", None, action="startup", **startup_summary(settings)
+            ),
+        ),
     )
     # Primero el tope del cuerpo: el middleware de observabilidad, que se agrega
     # después, queda por fuera y le pone X-Request-ID y log también al 413.
     app.add_middleware(BodySizeLimit, max_bytes=settings.limits.body_bytes)
     _add_observability(app, observability)
-    _add_secret_handler(app)
+    _add_blocked_handler(app)
     access = _access_dependencies(settings, observability)
     _add_routes(app, settings, service, observability.metrics, access)
+    # Al final, para quedar por fuera de todo: también los errores llevan cabeceras.
+    production = settings.security.environment == "production"
+    add_security_headers(app, PAGE.read_text(encoding="utf-8"), production)
     return app
 
 

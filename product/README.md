@@ -75,8 +75,9 @@ Errores: `401 {"detail": "invalid or missing API key"}`; `429 {"detail": "rate l
 `Retry-After`; `413 {"detail": "request body too large"}` si el cuerpo pasa de `MAX_BODY_BYTES` (antes de leerlo
 y antes de revisar la clave); `422` si la pregunta está vacía o es demasiado larga, si el historial trae más de
 `MAX_HISTORY_MESSAGES` mensajes o uno pasa del largo de su rol, o si hay caracteres de control o marcas
-bidireccionales; `400 {"detail": "request contains a secret; remove it and ask again"}` si la pregunta o el
-historial traen un secreto; `502` si el modelo real falla; `500 {"detail": "internal error", "request_id": ...}` ante
+bidireccionales; `400 {"detail": "request looks like a prompt injection; ask about employees"}` si la pregunta
+o el historial parecen una inyección y `400 {"detail": "request contains a secret; remove it and ask again"}` si
+traen un secreto; `502` si el modelo real falla; `500 {"detail": "internal error", "request_id": ...}` ante
 cualquier otra falla. Toda respuesta lleva
 `X-Request-ID`: si el cliente lo manda (1 a 128 caracteres de `A-Z a-z 0-9 . _ : -`) se respeta; si no, se genera
 un UUID.
@@ -104,13 +105,25 @@ un UUID.
   la forma `EMP-0000` y un departamento que existe en los datos (normalizados antes de ejecutar). La respuesta
   sale sin caracteres de control ni etiquetas HTML y con `MAX_ANSWER_CHARS` como máximo (se marca
   « [respuesta recortada]»); la página además la pinta con `textContent`.
-- **Auditoría**: el evento `audit` registra cada herramienta (`tool_call`), cada rechazo (`auth_failed` con su
-  motivo, `rate_limited` con la espera), cada respuesta del modelo fuera del protocolo (`output_rejected` con su
-  motivo, por ejemplo `bad_employee_id`) y cada limpieza de la respuesta (`output_sanitized` con los cambios),
-  con el `client` cuando se conoce y nunca el texto.
+- **Prompt injection** (ADR 0016): siete reglas en español e inglés (ignorar instrucciones, prompt del sistema,
+  cambio de rol, revelar claves o el prompt, protocolo JSON del agente escrito a mano, roles falsos como
+  `SYSTEM:` y jailbreaks) revisan la pregunta y cada mensaje del historial, de los dos roles (el historial puede
+  venir falsificado). Miran una copia sin caracteres invisibles, en NFKC, sin acentos y en minúsculas. Una
+  coincidencia responde `400` sin llamar al modelo.
+- **Auditoría completa** (ADR 0016): cada línea `audit` lleva `action`, `request_id` y `client` cuando se conoce,
+  y nunca texto, claves ni valores. Acciones: `startup` (configuración sin secretos), `startup_refused`
+  (compliance), `auth_failed`, `rate_limited`, `request_rejected` (`413` o `422`, con el motivo),
+  `injection_blocked` (reglas), `secret_blocked` y `pii_detected` (tipos y cantidades), `tool_call`,
+  `output_rejected` (motivo) y `output_sanitized` (cambios).
+- **Cabeceras de seguridad** en toda respuesta, también en los errores: `nosniff`, `X-Frame-Options: DENY`,
+  `Referrer-Policy: no-referrer`, aislamiento de origen, `Permissions-Policy` restrictiva, `Cache-Control:
+  no-store` y una CSP por ruta (la página solo corre su script y su estilo en línea, por hash; el JSON,
+  `default-src 'none'`; `/docs`, Swagger UI desde su CDN). HSTS en producción. CORS cerrado y `/redoc` apagado.
 - **Compliance como código**: con `ENVIRONMENT=production` el producto **no arranca** si `MODEL_PROVIDER=fake`, si
-  `API_KEYS` está vacía o tiene una clave de menos de 16 caracteres, o si `LANGSMITH_TRACING=true` sin
-  `HIDE_INPUTS` y `HIDE_OUTPUTS` en `true`. Detalle en [`doc/compliance-checklist.md`](doc/compliance-checklist.md).
+  `API_KEYS` está vacía o tiene una clave de menos de 16 caracteres, si `LANGSMITH_TRACING=true` con `HIDE_INPUTS`
+  o `HIDE_OUTPUTS` en `false`, o si se pasan los topes de producción (`MAX_BODY_BYTES` 1 MiB,
+  `MAX_HISTORY_MESSAGES` 50, `AGENT_MAX_STEPS` 5, `MODEL_MAX_TOKENS` 1024). Detalle en
+  [`doc/compliance-checklist.md`](doc/compliance-checklist.md).
 - **Página**: la clave vive en `sessionStorage` y viaja en `X-API-Key`; con `401` muestra «Clave inválida» y con
   `429` «Demasiadas preguntas; espera N segundos».
 - **Secretos**: solo en variables de entorno: `.env` en tu equipo (git ignora `.env` y cualquier `.env.*`, salvo

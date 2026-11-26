@@ -2,7 +2,9 @@
 # python:3.12-slim, usuario sin privilegios y solo el código y los datos de la app.
 # Solo las dependencias de ejecución, del lock con versiones y hashes: nada de pytest,
 # pylint ni Playwright en producción.
-FROM python:3.12-slim
+# Imagen base fijada por digest (índice multiarquitectura de python:3.12-slim publicado
+# el 2026-11-24); cómo se actualiza: ADR 0015.
+FROM python:3.12-slim@sha256:191083cdf6c7bda8c76158983163ead5d5cf7b77cf3033e805bb0f5296f51b4b
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -36,4 +38,4 @@ request.urlopen('http://127.0.0.1:${PORT:-8000}/health', timeout=4)"
 # principal para que reciba la señal de apagado. --no-access-log: el log de la
 # plataforma queda solo con las líneas JSON del producto.
 CMD ["sh", "-c", \
-     "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --no-access-log"]
+     "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --no-access-log --no-server-header"]

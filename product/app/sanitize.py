@@ -85,6 +85,18 @@ def has_forbidden_chars(text: str) -> bool:
     return any(is_forbidden(char) for char in text)
 
 
+class BlockedRequest(ValueError):
+    """La pregunta o el historial no pueden llegar al modelo; la API responde ``400``.
+
+    Cada subclase define ``DETAIL``, el texto del cuerpo de la respuesta.
+    """
+
+    DETAIL = "request blocked"
+
+    def __init__(self) -> None:
+        super().__init__(self.DETAIL)
+
+
 @dataclass(frozen=True)
 class CleanAnswer:
     """Respuesta lista para salir y lo que se le cambió.

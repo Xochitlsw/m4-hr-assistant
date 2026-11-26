@@ -65,6 +65,13 @@ def test_secrets_are_found_and_redacted(kind):
     assert f"[REDACTED:{kind}]" in found.text
 
 
+@pytest.mark.parametrize("kind", ["pt", "sk", "tr"])
+def test_every_langsmith_key_kind_is_a_secret(kind):
+    """Personal, de servicio y Tracing Only (``lsv2_tr_``, la de mínimo privilegio)."""
+    key = "lsv2" + f"_{kind}_" + "d4" * 16
+    assert scan(f"mi clave {key}").secrets == {"LANGSMITH_KEY": 1}
+
+
 def test_a_number_that_fails_luhn_is_not_a_card():
     assert "CARD" not in scan("Folio 4111 1111 1111 1112").pii
 

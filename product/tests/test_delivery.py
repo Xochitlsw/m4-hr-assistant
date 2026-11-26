@@ -29,6 +29,7 @@ DEV_ONLY = {
 PRODUCT_STAGES = ("style", "unit", "e2e", "docker")
 FACTORY_STEPS = ("unit", "contract", "qa", "e2e", "evaluate")
 PINNED_ACTION = re.compile(r"uses:\s+[\w.-]+/[\w.-]+@[0-9a-f]{40}\s+#\s+v\d+\.\d+\.\d+")
+PINNED_BASE = re.compile(r"^FROM python:3\.12-slim@sha256:[0-9a-f]{64}$", re.MULTILINE)
 
 
 def normalize(name: str) -> str:
@@ -148,6 +149,7 @@ def test_the_image_installs_only_the_runtime_lock_and_runs_unprivileged():
     assert "--require-hashes" in dockerfile and "--no-deps" in dockerfile
     assert "requirements-dev" not in dockerfile
     assert "USER app" in dockerfile and "HEALTHCHECK" in dockerfile
+    assert PINNED_BASE.search(dockerfile)
     ignored = (PRODUCT / ".dockerignore").read_text(encoding="utf-8").splitlines()
     excluded = {".env", "tests/", "requirements-dev.txt", "requirements*.in"}
     assert excluded <= set(ignored)

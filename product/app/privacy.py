@@ -23,7 +23,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.sanitize import detection_view
+from app.sanitize import BlockedRequest, detection_view
 
 SECRETS = (
     ("PRIVATE_KEY", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
@@ -33,7 +33,8 @@ SECRETS = (
         "GITHUB_TOKEN",
         re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})"),
     ),
-    ("LANGSMITH_KEY", re.compile(r"\blsv2_(?:pt|sk)_[A-Za-z0-9_]{20,}")),
+    # pt: personal, sk: de servicio, tr: Tracing Only (la de mínimo privilegio).
+    ("LANGSMITH_KEY", re.compile(r"\blsv2_(?:pt|sk|tr)_[A-Za-z0-9_]{20,}")),
     ("BEARER", re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/-]{16,}=*")),
     (
         "CREDENTIAL",
@@ -83,13 +84,10 @@ def passes_luhn(number: str) -> bool:
 VALIDATORS: dict[str, Callable[[str], bool]] = {"CARD": passes_luhn}
 
 
-class SecretFound(ValueError):
+class SecretFound(BlockedRequest):
     """La pregunta o el historial traen un secreto; la API responde ``400``."""
 
     DETAIL = "request contains a secret; remove it and ask again"
-
-    def __init__(self) -> None:
-        super().__init__(self.DETAIL)
 
 
 def merge_counts(counts: Iterable[dict[str, int]]) -> dict[str, int]:

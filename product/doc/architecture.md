@@ -29,6 +29,8 @@ Decisiones:
   redactadas.
 - [ADR 0015](adr/0015-root-ci-locked-dependencies-and-supply-chain.md): CI y Blueprint en la raíz, dependencias
   fijadas con hashes y cadena de suministro.
+- [ADR 0016](adr/0016-injection-audit-and-http-hardening.md): prompt injection, auditoría completa, cabeceras de
+  seguridad y topes de producción.
 
 ## Componentes
 
@@ -56,7 +58,9 @@ flowchart LR
   logs --> stdout[/"stdout: una línea JSON por evento"/]
   mw -- "latencia · status" --> metrics["Metrics<br/>metrics.py"]
   api -- "tokens · costo" --> metrics
+  api -- "pregunta e historial" --> injection["injection.py<br/>400 si parece una inyección"]
   api -- "pregunta, historial y respuesta" --> privacy["privacy.py<br/>redacta datos personales · 400 si hay un secreto"]
+  headers["headers.py<br/>CSP · nosniff · no-store · HSTS"] -. "toda respuesta" .-> mw
   agent -. "trazas si hay bandera y clave" .-> tracing["tracing.py<br/>oculta o redacta (privacy.py)"]
   tracing -.-> langsmith[("LangSmith")]
   config["config.py + compliance.py<br/>valida y aplica reglas de producción"] -. "al arrancar" .-> api
@@ -72,6 +76,8 @@ flowchart LR
 | `app/body_limit.py` | Middleware ASGI: `413` si el cuerpo pasa de `MAX_BODY_BYTES`, por `Content-Length` o contando mientras llega |
 | `app/sanitize.py` | Caracteres prohibidos en la entrada (controles, marcas bidireccionales y etiquetas) y limpieza de la respuesta (controles, HTML, largo); copia normalizada para los detectores (`detection_view`) |
 | `app/privacy.py` | Detector de datos personales y secretos, redacción `[REDACTED:TIPO]`, `SecretFound` (`400`) y `redact_tree` para las trazas |
+| `app/injection.py` | Siete reglas de prompt injection en español e inglés sobre una copia normalizada; `InjectionFound` (`400`) |
+| `app/headers.py` | Cabeceras de seguridad de toda respuesta y CSP por ruta (la de la página, con los hashes de su script y su estilo) |
 | `app/agent.py` | Bucle con tope, protocolo JSON, lista blanca, argumentos validados y normalizados (`EMP-0000`, departamentos de los datos), consumo (`Usage`) y avisos por herramienta y por respuesta rechazada |
 | `app/catalog.py` | Arma el modelo pequeño y el grande (simulados o reales) envueltos en `PricedModel`, y valida sus precios |
 | `app/llm.py` | Interfaz `complete(messages)`, `Completion` y `FakeModel` |
@@ -220,6 +226,10 @@ Un valor inválido o una configuración de producción que no cumple impiden arr
 incluye un secreto. `product/.env.example` lista todas las variables con los secretos vacíos.
 
 ## Propiedades
+
+- **Defensa en capas contra la inyección**: heurísticas que bloquean antes del modelo, agente con dos herramientas
+  de solo lectura y argumentos validados, tope de pasos y salida limpia y redactada (ADR 0013, 0014 y 0016).
+- **Auditable**: cada acción relevante deja una línea `audit` sin texto ni secretos, incluido el arranque.
 
 - **Sin estado**: escalar es correr más copias; el `pid` de `/health` y `/metrics` muestra qué copia contestó (el
   límite de peticiones es por copia).

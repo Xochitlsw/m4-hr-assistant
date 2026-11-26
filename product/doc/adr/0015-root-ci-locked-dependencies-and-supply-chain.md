@@ -80,10 +80,21 @@ nuevas, pero cambiar de versión mayor sin leer sus notas puede romper el pipeli
   `GITLEAKS_LICENSE`.
 - El trabajo `docker` tarda unos 30 s más, porque espera el primer `HEALTHCHECK`.
 
+## Imagen base por digest (actualización del 2026-11-26)
+
+`FROM python:3.12-slim@sha256:191083cdf6c7bda8c76158983163ead5d5cf7b77cf3033e805bb0f5296f51b4b`: es el índice multiarquitectura de la etiqueta `3.12-slim`
+publicado el 2026-11-24 (consultado en Docker Hub). Con el digest, el build usa siempre la misma imagen. A cambio,
+la imagen no recibe los parches del sistema hasta que se actualiza el digest:
+
+1. Consulta el digest actual de la etiqueta, por ejemplo con `docker buildx imagetools inspect python:3.12-slim`
+   (línea `Digest:` del índice, no la de una plataforma) o en la página de la etiqueta en Docker Hub.
+2. Cambia el `FROM` del `Dockerfile` y la fecha del comentario.
+3. Haz push: el trabajo `docker` del CI construye la imagen y la prueba (usuario, dependencias, `HEALTHCHECK` y
+   prueba de humo) antes de que Render la publique.
+
+Se actualiza cada mes o cuando haya un aviso de seguridad de Python o de Debian.
+
 ## Pendiente
 
-- **Imagen base por digest.** `python:3.12-slim` sigue fijada por etiqueta. Fijarla por digest
-  (`python:3.12-slim@sha256:...`) hace el build reproducible, pero deja de recibir parches de seguridad hasta
-  actualizarla a mano o con Dependabot. Se decide con acceso a la documentación del registro.
 - **Dependabot** (pip, docker y github-actions) mantendría al día los locks, los SHA y el digest. Se dejó fuera
   para no abrir pull requests automáticos durante la entrega.

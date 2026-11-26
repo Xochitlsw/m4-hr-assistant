@@ -9,6 +9,13 @@ variables, nunca una clave.
 from app.config import ConfigError, Settings
 
 MIN_KEY_LENGTH = 16
+# Producción no puede quitar los topes de entrada, agencia y consumo (ADR 0016).
+CEILINGS = (
+    ("MAX_BODY_BYTES", 1_048_576, lambda settings: settings.limits.body_bytes),
+    ("MAX_HISTORY_MESSAGES", 50, lambda settings: settings.limits.history_messages),
+    ("AGENT_MAX_STEPS", 5, lambda settings: settings.agent_max_steps),
+    ("MODEL_MAX_TOKENS", 1024, lambda settings: settings.models.max_tokens),
+)
 
 
 def violations(settings: Settings) -> list[str]:
@@ -31,6 +38,9 @@ def violations(settings: Settings) -> list[str]:
                 f"API_KEYS key of client {client!r} must have at least "
                 f"{MIN_KEY_LENGTH} characters"
             )
+    for name, ceiling, read in CEILINGS:
+        if read(settings) > ceiling:
+            found.append(f"{name} must be at most {ceiling} in production")
     observability = settings.observability
     modes = (observability.inputs_privacy, observability.outputs_privacy)
     if observability.tracing_requested and "clear" in modes:
