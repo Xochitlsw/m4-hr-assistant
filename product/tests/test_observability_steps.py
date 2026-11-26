@@ -94,12 +94,20 @@ def error_line(log_records, request_id, error_type):
 
 @then(
     parsers.parse(
-        "the metrics count {requests:d} request with p50 and p95 of {latency:g} ms"
+        "the metrics count {requests:d} request with p50 and p95 equal to its "
+        "logged latency"
     )
 )
-def metrics_count(metrics, requests, latency):
+def metrics_count(metrics, requests, response, log_records):
+    request_id = response.headers["X-Request-ID"]
+    logged = next(
+        r["latency_ms"]
+        for r in log_records()
+        if r["event"] == "request" and r["request_id"] == request_id
+    )
+    assert logged > 0
     assert metrics["requests"] == requests
-    assert metrics["latency_ms"] == {"p50": latency, "p95": latency}
+    assert metrics["latency_ms"] == {"p50": logged, "p95": logged}
     assert metrics["error_rate"] == 0.0
 
 

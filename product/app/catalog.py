@@ -40,7 +40,7 @@ def build_models(
     names = (config.small, config.large)
     if model is not None:
         bases = {name: model for name in names}
-    elif settings.model_provider == "gateway":
+    elif config.provider == "gateway":
         if http_client is None:
             raise ConfigError("MODEL_PROVIDER=gateway needs an HTTP client")
         bases = {name: GatewayModel(name, config, http_client) for name in names}

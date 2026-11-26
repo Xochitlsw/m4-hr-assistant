@@ -76,6 +76,8 @@
       cursor: pointer;
     }
     button:disabled { opacity: 0.6; cursor: wait; }
+    .key-row { display: flex; gap: 8px; align-items: center; }
+    .key-row label { font-size: 0.9rem; color: var(--muted); white-space: nowrap; }
   </style>
 </head>
 <body>
@@ -84,6 +86,11 @@
       <h1>HR Assistant</h1>
       <p class="subtitle">Pregunta por un empleado (EMP-0001) o por un departamento.</p>
     </header>
+    <div class="key-row">
+      <label for="api-key">Clave de acceso</label>
+      <input id="api-key" data-testid="api-key" type="password" autocomplete="off"
+             placeholder="La clave que te dio el equipo de soporte">
+    </div>
     <section class="conversation" data-testid="answer" aria-live="polite"
              aria-label="Conversación"></section>
     <form id="ask-form">
@@ -96,11 +103,34 @@
     "use strict";
     // El historial vive solo en el navegador: la API no guarda nada.
     // Todo el texto se pinta con textContent, para que una respuesta no inyecte código.
+    // La clave solo vive en sessionStorage (se borra al cerrar la pestaña) y viaja en
+    // el encabezado X-API-Key; nunca se escribe en el código de la página.
+    const KEY_STORAGE = "hr-assistant.api-key";
     const history = [];
     const form = document.getElementById("ask-form");
     const question = document.querySelector('[data-testid="question"]');
     const send = document.querySelector('[data-testid="send"]');
     const conversation = document.querySelector('[data-testid="answer"]');
+    const apiKey = document.querySelector('[data-testid="api-key"]');
+
+    function readStoredKey() {
+      try {
+        return sessionStorage.getItem(KEY_STORAGE) || "";
+      } catch (error) {
+        return "";
+      }
+    }
+
+    function storeKey(value) {
+      try {
+        sessionStorage.setItem(KEY_STORAGE, value);
+      } catch (error) {
+        // Sin sessionStorage la clave solo dura mientras la página está abierta.
+      }
+    }
+
+    apiKey.value = readStoredKey();
+    apiKey.addEventListener("change", () => storeKey(apiKey.value.trim()));
 
     function addLine(item, className, text) {
       const line = document.createElement("p");
@@ -127,7 +157,13 @@
       conversation.scrollTop = conversation.scrollHeight;
     }
 
-    function errorText(status) {
+    function errorText(status, retryAfter) {
+      if (status === 401) {
+        return "Clave inválida. Revisa la clave de acceso.";
+      }
+      if (status === 429) {
+        return "Demasiadas preguntas; espera " + (retryAfter || "unos") + " segundos.";
+      }
       if (status === 422) {
         return "La pregunta está vacía o es demasiado larga. "
           + "Revísala e intenta de nuevo.";
@@ -145,15 +181,19 @@
       addMessage("user", text);
       question.value = "";
       send.disabled = true;
+      const key = apiKey.value.trim();
+      storeKey(key);
       try {
         const response = await fetch("/ask", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", "X-API-Key": key },
           body: JSON.stringify({ question: text, history: history }),
         });
         if (!response.ok) {
           const supportId = response.headers.get("X-Request-ID");
-          addMessage("error", errorText(response.status), null, supportId);
+          const retryAfter = response.headers.get("Retry-After");
+          const message = errorText(response.status, retryAfter);
+          addMessage("error", message, null, supportId);
           return;
         }
         const data = await response.json();

@@ -1,0 +1,19 @@
+# Lo que nunca entra a la imagen: secretos, pruebas, cachés y lo que no se ejecuta.
+.env
+.env.*
+.venv/
+.git/
+.github/
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+test-results/
+tests/
+e2e/
+doc/
+scripts/
+render.yaml
+Dockerfile
+.dockerignore

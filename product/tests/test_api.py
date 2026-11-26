@@ -54,6 +54,36 @@ def test_the_window_limits_the_history_sent_to_the_model(make_client, log_record
     assert run["cost_usd"] == response.json()["cost_usd"]
 
 
+def test_metrics_need_a_key(client):
+    assert client.get("/metrics", headers={"X-API-Key": ""}).status_code == 401
+    assert client.get("/metrics").status_code == 200
+
+
+def test_the_key_is_checked_before_the_body_fields(client):
+    response = client.post("/ask", json={}, headers={"X-API-Key": ""})
+    assert response.status_code == 401
+
+
+def test_openapi_declares_the_api_key_scheme(client):
+    schema = client.get("/openapi.json").json()
+    schemes = schema["components"]["securitySchemes"].values()
+    assert {"type": "apiKey", "in": "header", "name": "X-API-Key"} in [
+        {key: scheme[key] for key in ("type", "in", "name")} for scheme in schemes
+    ]
+    assert schema["paths"]["/ask"]["post"]["security"]
+    assert schema["paths"]["/metrics"]["get"]["security"]
+
+
+def test_the_page_keeps_the_key_in_session_storage(client):
+    page = client.get("/").text
+    assert 'data-testid="api-key"' in page
+    assert 'type="password"' in page
+    assert "sessionStorage" in page
+    assert "localStorage" not in page
+    assert "Clave inválida" in page
+    assert "Demasiadas preguntas" in page
+
+
 def test_home_page_shows_the_support_id(client):
     page = client.get("/").text
     assert "Id de soporte" in page

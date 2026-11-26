@@ -3,7 +3,7 @@
 ``create_app()`` recibe sus dependencias (configuración, modelo, directorio,
 observabilidad y cliente HTTP) para que las pruebas inyecten las suyas.
 ``uvicorn app.main:app`` usa la aplicación armada con las variables de entorno del
-proceso.
+proceso. Antes de armar nada aplica las reglas de producción (``app.compliance``).
 """
 
 import os
@@ -15,9 +15,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, Security
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.security import APIKeyHeader
 
+from app import compliance
 from app.agent import Agent
 from app.catalog import build_models
 from app.clock import Clock, SystemClock
@@ -29,18 +31,23 @@ from app.logs import EventLogger
 from app.metrics import Metrics
 from app.routing import Router, apply_window
 from app.schemas import AskResponse, build_ask_request
+from app.security import KeyStore, RateLimiter
 from app.tracing import Tracer
 
 PAGE = Path(__file__).resolve().parent / "static" / "index.html"
 REQUEST_ID_HEADER = "X-Request-ID"
 SAFE_REQUEST_ID = re.compile(r"[A-Za-z0-9._:-]{1,128}")
+# auto_error=False: el 401 lo arma la aplicación con el texto de la especificación.
+API_KEY_SCHEME = APIKeyHeader(
+    name="X-API-Key", auto_error=False, description="API key of the client"
+)
 
 
 @dataclass(frozen=True)
 class Observability:
     """Piezas de observabilidad que comparte la aplicación.
 
-    :param clock: Reloj para el log y las latencias
+    :param clock: Reloj para el log, las latencias y el límite de peticiones
     :type clock: app.clock.Clock
     :param logger: Log de eventos JSON
     :type logger: app.logs.EventLogger
@@ -117,9 +124,9 @@ class AskService:
         self._observability = observability
 
     def answer(
-        self, question: str, history: list[dict], request_id: str
+        self, question: str, history: list[dict], request_id: str, client: str
     ) -> AskResponse:
-        """Responde una pregunta y deja su rastro sin guardar el texto.
+        """Responde una pregunta y deja su rastro sin guardar el texto ni la clave.
 
         :param question: Pregunta ya validada
         :type question: str
@@ -127,6 +134,8 @@ class AskService:
         :type history: list[dict]
         :param request_id: Id de la petición
         :type request_id: str
+        :param client: Cliente autenticado
+        :type client: str
         :return: La respuesta de la API, con modelo, ruta y costo
         :rtype: app.schemas.AskResponse
         :raises app.gateway.ModelUnavailable: Si el modelo real falla
@@ -136,16 +145,24 @@ class AskService:
         log = self._observability.logger
 
         def audit(tool: str, args: dict) -> None:
-            log.emit("audit", request_id, action="tool_call", tool=tool, args=args)
+            log.emit(
+                "audit",
+                request_id,
+                action="tool_call",
+                client=client,
+                tool=tool,
+                args=args,
+            )
 
         agent = Agent(self._models[decision.model], self._directory, self._max_steps)
-        tracer = self._observability.tracer
-        with tracer.request(request_id, model=decision.model, route=decision.route):
+        metadata = {"client": client, "model": decision.model, "route": decision.route}
+        with self._observability.tracer.request(request_id, **metadata):
             result = agent.run(question, sent, on_tool_call=audit)
         response = AskResponse.from_result(result, request_id, decision)
         log.emit(
             "agent_run",
             request_id,
+            client=client,
             question_chars=len(question),
             history_messages=len(history),
             history_sent=len(sent),
@@ -177,6 +194,63 @@ def _lifespan(client: httpx.Client | None) -> Callable:
     return lifespan
 
 
+def _access_dependencies(
+    settings: Settings, observability: Observability
+) -> tuple[Callable, Callable]:
+    """Dependencias de FastAPI: clave por cliente (401) y límite de peticiones (429).
+
+    Corren antes de validar los campos del cuerpo. Auditan los rechazos sin escribir
+    la clave presentada.
+
+    :param settings: Configuración validada
+    :type settings: app.config.Settings
+    :param observability: Reloj y log
+    :type observability: Observability
+    :return: ``(require_client, limit_rate)``
+    :rtype: tuple[Callable, Callable]
+    """
+    keys = KeyStore(settings.security.api_keys)
+    limiter = RateLimiter(settings.security.rate_limit_per_minute, observability.clock)
+    log = observability.logger
+
+    def require_client(
+        request: Request, key: str | None = Security(API_KEY_SCHEME)
+    ) -> str:
+        """Devuelve el cliente de la clave, o responde 401."""
+        client = keys.client_for(key)
+        if client is None:
+            log.emit(
+                "audit",
+                request.state.request_id,
+                action="auth_failed",
+                reason="invalid" if key else "missing",
+                path=request.url.path,
+            )
+            raise HTTPException(status_code=401, detail="invalid or missing API key")
+        request.state.client = client
+        return client
+
+    def limit_rate(request: Request, client: str = Depends(require_client)) -> str:
+        """Deja pasar al cliente si no superó su límite; si no, responde 429."""
+        retry_after = limiter.hit(client)
+        if retry_after is not None:
+            log.emit(
+                "audit",
+                request.state.request_id,
+                action="rate_limited",
+                client=client,
+                retry_after=retry_after,
+            )
+            raise HTTPException(
+                status_code=429,
+                detail="rate limit exceeded",
+                headers={"Retry-After": str(retry_after)},
+            )
+        return client
+
+    return require_client, limit_rate
+
+
 def _add_observability(app: FastAPI, observability: Observability) -> None:
     """Middleware de petición y respuesta ``502`` cuando el modelo real falla."""
     log = observability.logger
@@ -203,6 +277,7 @@ def _add_observability(app: FastAPI, observability: Observability) -> None:
         log.emit(
             "request",
             request_id,
+            client=getattr(request.state, "client", None),
             method=request.method,
             path=path,
             status=response.status_code,
@@ -214,7 +289,12 @@ def _add_observability(app: FastAPI, observability: Observability) -> None:
     async def model_unavailable(request: Request, error: ModelUnavailable):
         """El modelo real no respondió: ``502`` con el ``request_id``."""
         request_id = request.state.request_id
-        log.emit("error", request_id, error_type=type(error).__name__)
+        log.emit(
+            "error",
+            request_id,
+            client=getattr(request.state, "client", None),
+            error_type=type(error).__name__,
+        )
         return JSONResponse(
             status_code=502,
             content={"detail": "model unavailable", "request_id": request_id},
@@ -222,9 +302,14 @@ def _add_observability(app: FastAPI, observability: Observability) -> None:
 
 
 def _add_routes(
-    app: FastAPI, settings: Settings, service: AskService, metrics: Metrics
+    app: FastAPI,
+    settings: Settings,
+    service: AskService,
+    metrics: Metrics,
+    access: tuple[Callable, Callable],
 ) -> None:
-    """Rutas de la API: página, salud, métricas y preguntas."""
+    """Rutas de la API: página y salud sin clave; métricas y preguntas con clave."""
+    require_client, limit_rate = access
     ask_request = build_ask_request(settings.max_question_chars)
     page = PAGE.read_text(encoding="utf-8")
 
@@ -238,16 +323,24 @@ def _add_routes(
         """Indica que el proceso responde y cuál copia contestó."""
         return {"status": "ok", "pid": os.getpid()}
 
-    @app.get("/metrics", summary="Latency, errors, tokens, cost and SLO")
+    @app.get(
+        "/metrics",
+        summary="Latency, errors, tokens, cost and SLO",
+        dependencies=[Depends(require_client)],
+    )
     def process_metrics() -> dict:
         """Métricas del tráfico de usuarios de este proceso."""
         return metrics.snapshot()
 
     @app.post("/ask", response_model=AskResponse, summary="Ask the HR Assistant")
-    def ask(body: ask_request, request: Request) -> AskResponse:
+    def ask(
+        body: ask_request, request: Request, client: str = Depends(limit_rate)
+    ) -> AskResponse:
         """Enruta la pregunta, corre el agente y responde con modelo, ruta y costo."""
         history = [turn.model_dump() for turn in body.history]
-        return service.answer(body.question, history, request.state.request_id)
+        return service.answer(
+            body.question, history, request.state.request_id, client
+        )
 
 
 def create_app(
@@ -259,8 +352,8 @@ def create_app(
 ) -> FastAPI:
     """Arma la aplicación con sus dependencias.
 
-    El cliente HTTP del modelo real solo se crea con ``MODEL_PROVIDER=gateway`` (y
-    se cierra al apagar); crearlo es lento y con el modelo simulado no hace falta.
+    Primero aplica las reglas de producción. El cliente HTTP del modelo real solo se
+    crea con ``MODEL_PROVIDER=gateway`` (y se cierra al apagar).
 
     :param settings: Configuración; si es ``None``, se lee del entorno
     :type settings: Settings | None
@@ -276,16 +369,17 @@ def create_app(
     :return: La aplicación FastAPI
     :rtype: fastapi.FastAPI
     :raises app.config.ConfigError: Si la configuración, los datos o los precios son
-        inválidos
+        inválidos, o si producción no cumple sus reglas
     """
     if settings is None:
         settings = load_settings()
+    compliance.enforce(settings)
     if directory is None:
         directory = EmployeeDirectory.load(settings.employees_path)
     if observability is None:
         observability = Observability.from_settings(settings)
     owned_client = None
-    if http_client is None and model is None and settings.model_provider == "gateway":
+    if http_client is None and model is None and settings.models.provider == "gateway":
         owned_client = http_client = build_http_client(settings.models)
     models = build_models(settings, directory, http_client, model)
     service = AskService(settings, models, directory, observability)
@@ -296,7 +390,8 @@ def create_app(
         lifespan=_lifespan(owned_client),
     )
     _add_observability(app, observability)
-    _add_routes(app, settings, service, observability.metrics)
+    access = _access_dependencies(settings, observability)
+    _add_routes(app, settings, service, observability.metrics, access)
     return app
 
 

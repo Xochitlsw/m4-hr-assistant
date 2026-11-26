@@ -1,0 +1,85 @@
+# Pipeline del HR Assistant: cuatro etapas encadenadas con needs, visibles en la
+# pestaña Actions. Una etapa no corre si la anterior falló.
+#   style -> unit -> e2e -> docker
+# La clave de e2e es un texto de ejemplo, visible a propósito: no es un secreto y no
+# sirve en ningún otro lugar.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  style:
+    name: style (pylint, 88 columnas)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+      - name: Pylint
+        run: >-
+          pylint app tests --max-line-length=88
+          --disable=missing-function-docstring
+          --disable=redefined-outer-name,too-few-public-methods
+
+  unit:
+    name: unit (pruebas y BDD, cobertura >= 80 %)
+    needs: style
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+      - name: Pruebas con cobertura
+        run: pytest tests -q -p no:cacheprovider --cov=app --cov-fail-under=80
+
+  e2e:
+    name: e2e (Playwright con el modelo simulado)
+    needs: unit
+    runs-on: ubuntu-latest
+    env:
+      MODEL_PROVIDER: fake
+      API_KEYS: "ci:ci-example-key-0123456789"
+      E2E_API_KEY: "ci-example-key-0123456789"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+      - name: Instalar Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Arrancar el producto
+        run: |
+          python -m uvicorn app.main:app --port 8000 --no-access-log > server.log 2>&1 &
+          for attempt in $(seq 1 40); do
+            curl -fs http://127.0.0.1:8000/health && exit 0
+            sleep 0.5
+          done
+          cat server.log
+          exit 1
+      - name: Pruebas de punta a punta
+        run: pytest e2e -q -p no:cacheprovider --base-url http://127.0.0.1:8000
+
+  docker:
+    name: docker (construir la imagen)
+    needs: e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Construir la imagen
+        run: docker build -t m4-hr-assistant:ci .

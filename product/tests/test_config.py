@@ -12,7 +12,7 @@ PRODUCT = Path(__file__).resolve().parents[1]
 
 def test_defaults_come_from_the_spec():
     settings = load_settings({})
-    assert settings.model_provider == "fake"
+    assert settings.models.provider == "fake"
     assert settings.agent_max_steps == 3
     assert settings.max_question_chars == 2000
     assert settings.employees_path == PRODUCT / "data" / "employees.json"
@@ -93,6 +93,19 @@ def test_invalid_cost_values_stop_the_start():
         ("CACHE_TTL_SECONDS", "-1"),
     ]
     for name, value in invalid:
+        with pytest.raises(ConfigError, match=name):
+            load_settings({name: value})
+
+
+def test_security_defaults_and_invalid_values():
+    settings = load_settings({})
+    security = settings.security
+    assert security.environment == "development"
+    assert (security.api_keys, security.rate_limit_per_minute) == ((), 30)
+    with_key = load_settings({"API_KEYS": "portal:portal-key-0123456789"})
+    assert with_key.security.clients == ("portal",)
+    assert "portal-key-0123456789" not in repr(with_key)
+    for name, value in (("ENVIRONMENT", "staging"), ("RATE_LIMIT_PER_MINUTE", "0")):
         with pytest.raises(ConfigError, match=name):
             load_settings({name: value})
 

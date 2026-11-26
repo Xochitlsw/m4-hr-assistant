@@ -3,7 +3,8 @@
 Cada variable tiene su valor por omisión de ``spec/``. Un valor inválido lanza
 :class:`ConfigError` y la aplicación no arranca. Los mensajes nombran la variable,
 nunca un valor secreto. La clave de LangSmith nunca se guarda (solo se comprueba que
-exista); el token de Cloudflare se guarda fuera de ``repr``.
+exista); el token de Cloudflare y las claves de ``API_KEYS`` se guardan fuera de
+``repr``. Las reglas de producción viven aparte, en ``app.compliance``.
 """
 
 import math
@@ -37,9 +38,13 @@ DEFAULTS = {
     "MODEL_TIMEOUT_SECONDS": "30",
     "CACHE_TTL_SECONDS": "0",
     "PRICES_PATH": "data/model_prices.json",
+    "ENVIRONMENT": "development",
+    "API_KEYS": "",
+    "RATE_LIMIT_PER_MINUTE": "30",
 }
 BOOLEANS = {"true": True, "false": False}
 GATEWAY_VARIABLES = ("CF_ACCOUNT_ID", "CF_GATEWAY_ID", "CF_API_TOKEN")
+ENVIRONMENTS = ("development", "production")
 
 
 class ConfigError(ValueError):
@@ -60,6 +65,9 @@ class ObservabilitySettings:
     :type hide_inputs: bool
     :param hide_outputs: No mandar a LangSmith las salidas
     :type hide_outputs: bool
+    :param tracing_requested: ``LANGSMITH_TRACING=true``, haya o no clave (lo revisa
+        compliance)
+    :type tracing_requested: bool
     """
 
     service_name: str
@@ -67,6 +75,7 @@ class ObservabilitySettings:
     tracing_enabled: bool
     hide_inputs: bool
     hide_outputs: bool
+    tracing_requested: bool = False
 
 
 @dataclass(frozen=True)
@@ -94,8 +103,10 @@ class GatewaySettings:
 
 @dataclass(frozen=True)
 class ModelSettings:
-    """Modelos, tope de salida, temperatura y precios.
+    """Proveedor, modelos, tope de salida, temperatura y precios.
 
+    :param provider: Modelo que usa el agente (``fake`` o ``gateway``)
+    :type provider: str
     :param small: Modelo barato
     :type small: str
     :param large: Modelo capaz
@@ -110,6 +121,7 @@ class ModelSettings:
     :type gateway: GatewaySettings
     """
 
+    provider: str
     small: str
     large: str
     max_tokens: int
@@ -136,11 +148,35 @@ class RoutingSettings:
 
 
 @dataclass(frozen=True)
+class SecuritySettings:
+    """Entorno, clientes con su clave y límite de peticiones.
+
+    :param environment: ``development`` o ``production`` (aplica compliance)
+    :type environment: str
+    :param api_keys: Pares ``(cliente, clave)``; secretos, fuera de ``repr``
+    :type api_keys: tuple[tuple[str, str], ...]
+    :param rate_limit_per_minute: Peticiones a ``/ask`` por cliente por minuto
+    :type rate_limit_per_minute: int
+    """
+
+    environment: str
+    api_keys: tuple[tuple[str, str], ...] = field(repr=False)
+    rate_limit_per_minute: int = 30
+
+    @property
+    def clients(self) -> tuple[str, ...]:
+        """Nombres de los clientes, sin sus claves.
+
+        :return: Los clientes en el orden de ``API_KEYS``
+        :rtype: tuple[str, ...]
+        """
+        return tuple(client for client, _ in self.api_keys)
+
+
+@dataclass(frozen=True)
 class Settings:
     """Configuración validada del producto.
 
-    :param model_provider: Modelo que usa el agente (``fake`` o ``gateway``)
-    :type model_provider: str
     :param agent_max_steps: Tope de vueltas del bucle del agente
     :type agent_max_steps: int
     :param max_question_chars: Largo máximo de la pregunta
@@ -149,19 +185,21 @@ class Settings:
     :type employees_path: pathlib.Path
     :param observability: Configuración del log, las métricas y las trazas
     :type observability: ObservabilitySettings
-    :param models: Modelos, tope de salida, temperatura, precios y gateway
+    :param models: Proveedor, modelos, tope de salida, temperatura, precios y gateway
     :type models: ModelSettings
     :param routing: Enrutamiento y ventana de historial
     :type routing: RoutingSettings
+    :param security: Entorno, clientes con su clave y límite de peticiones
+    :type security: SecuritySettings
     """
 
-    model_provider: str
     agent_max_steps: int
     max_question_chars: int
     employees_path: Path
     observability: ObservabilitySettings
     models: ModelSettings
     routing: RoutingSettings
+    security: SecuritySettings
 
 
 def _raw(env: Mapping[str, str], name: str) -> str:
@@ -245,12 +283,14 @@ def _path(env: Mapping[str, str], name: str) -> Path:
 def _observability(env: Mapping[str, str]) -> ObservabilitySettings:
     """Arma la configuración de observabilidad; de la clave solo mira si existe."""
     has_key = bool(env.get("LANGSMITH_API_KEY", "").strip())
+    requested = _boolean(env, "LANGSMITH_TRACING")
     return ObservabilitySettings(
         service_name=_raw(env, "SERVICE_NAME") or DEFAULTS["SERVICE_NAME"],
         slo_p95_ms=_integer(env, "SLO_P95_MS", 1),
-        tracing_enabled=_boolean(env, "LANGSMITH_TRACING") and has_key,
+        tracing_enabled=requested and has_key,
         hide_inputs=_boolean(env, "HIDE_INPUTS"),
         hide_outputs=_boolean(env, "HIDE_OUTPUTS"),
+        tracing_requested=requested,
     )
 
 
@@ -278,6 +318,7 @@ def _gateway(env: Mapping[str, str], provider: str) -> GatewaySettings:
 def _models(env: Mapping[str, str], provider: str) -> ModelSettings:
     """Arma la configuración de modelos, tope de salida, temperatura y precios."""
     return ModelSettings(
+        provider=provider,
         small=_raw(env, "MODEL_SMALL") or DEFAULTS["MODEL_SMALL"],
         large=_raw(env, "MODEL_LARGE") or DEFAULTS["MODEL_LARGE"],
         max_tokens=_integer(env, "MODEL_MAX_TOKENS", 1),
@@ -301,6 +342,50 @@ def _routing(env: Mapping[str, str]) -> RoutingSettings:
     )
 
 
+def parse_api_keys(raw: str) -> tuple[tuple[str, str], ...]:
+    """Lee ``API_KEYS`` (``cliente:clave,cliente2:clave2``).
+
+    Los mensajes de error dicen qué entrada falla y su largo, nunca su contenido, y
+    no encadenan ninguna excepción que pudiera llevarlo.
+
+    :param raw: Valor de ``API_KEYS``; las comas sobrantes se ignoran
+    :type raw: str
+    :return: Pares ``(cliente, clave)`` en orden
+    :rtype: tuple[tuple[str, str], ...]
+    :raises ConfigError: Si una entrada no es ``cliente:clave`` o se repite
+    """
+    pairs: list[tuple[str, str]] = []
+    for index, entry in enumerate(raw.split(","), start=1):
+        entry = entry.strip()
+        if not entry:
+            continue
+        client, _, key = (part.strip() for part in entry.partition(":"))
+        if not client or not key:
+            raise ConfigError(
+                f"API_KEYS entry {index} is invalid (length {len(entry)}): "
+                "use client:key"
+            )
+        if client in (name for name, _ in pairs):
+            raise ConfigError(f"API_KEYS client {client!r} is repeated")
+        if key in (known for _, known in pairs):
+            raise ConfigError(f"API_KEYS entry {index} repeats a key")
+        pairs.append((client, key))
+    return tuple(pairs)
+
+
+def _security(env: Mapping[str, str]) -> SecuritySettings:
+    """Arma el entorno, los clientes con su clave y el límite de peticiones."""
+    environment = _raw(env, "ENVIRONMENT").lower()
+    if environment not in ENVIRONMENTS:
+        allowed = ", ".join(ENVIRONMENTS)
+        raise ConfigError(f"ENVIRONMENT must be one of: {allowed}; got {environment!r}")
+    return SecuritySettings(
+        environment=environment,
+        api_keys=parse_api_keys(env.get("API_KEYS", DEFAULTS["API_KEYS"])),
+        rate_limit_per_minute=_integer(env, "RATE_LIMIT_PER_MINUTE", 1),
+    )
+
+
 def load_settings(env: Mapping[str, str] | None = None) -> Settings:
     """Arma la configuración desde las variables de entorno.
 
@@ -316,11 +401,11 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         allowed = ", ".join(MODEL_PROVIDERS)
         raise ConfigError(f"MODEL_PROVIDER must be one of: {allowed}; got {provider!r}")
     return Settings(
-        model_provider=provider,
         agent_max_steps=_integer(env, "AGENT_MAX_STEPS", 1),
         max_question_chars=_integer(env, "MAX_QUESTION_CHARS", 1),
         employees_path=_path(env, "EMPLOYEES_PATH"),
         observability=_observability(env),
         models=_models(env, provider),
         routing=_routing(env),
+        security=_security(env),
     )

@@ -1,0 +1,9 @@
+# Secretos y archivos locales que nunca van al repositorio del producto.
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+test-results/

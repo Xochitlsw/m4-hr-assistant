@@ -1,6 +1,6 @@
 # 0003 · Inyección de dependencias y configuración validada al arrancar
 
-Fecha: 2026-11-25 · Estado: aceptada · Sesión 1 (actualizada en las sesiones 2 y 3)
+Fecha: 2026-11-25 · Estado: aceptada · Sesión 1 (actualizada en las sesiones 2, 3 y 4)
 
 ## Contexto
 
@@ -22,7 +22,12 @@ desplegar, no con la primera pregunta.
 - Sesión 3: `create_app()` también recibe el `httpx.Client` del modelo real (las pruebas pasan uno con
   `MockTransport`). Si recibe `model`, ese modelo atiende las dos rutas del enrutador (lo usan las pruebas). Se
   agregan los grupos `settings.models` (con `gateway`) y `settings.routing`. Los precios (`PRICES_PATH`) se validan
-  al arrancar, igual que los datos.
+  al arrancar, igual que los datos. Los dos modelos con su precio los arma `app/catalog.py` (fuera de `llm.py`
+  para evitar importaciones circulares).
+- Sesión 4: se agrega el grupo `settings.security` (entorno, clientes y claves fuera de `repr`, límite por minuto)
+  y `model_provider` pasa a `settings.models.provider`, para que `Settings` no supere 7 grupos. Después de validar
+  los valores, `create_app()` aplica las reglas de producción (ADR 0011): validar la forma de un valor y decidir si
+  una configuración válida es aceptable en producción son pasos distintos.
 
 ## Consecuencias
 

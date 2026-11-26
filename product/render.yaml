@@ -1,0 +1,28 @@
+# Blueprint de Render para el HR Assistant.
+# El servicio se llama igual que el repositorio, para no actualizar por error un
+# servicio que ya exista en la cuenta. Render publica solo si el CI pasa
+# (autoDeployTrigger: checksPass). Los secretos llevan sync: false: se escriben en
+# Render > Environment, nunca en este archivo. LANGSMITH_API_KEY no va aquí: se agrega
+# en Render > Environment si se encienden las trazas.
+services:
+  - type: web
+    name: m4-hr-assistant
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: MODEL_PROVIDER
+        value: gateway
+      - key: HIDE_INPUTS
+        value: "true"
+      - key: HIDE_OUTPUTS
+        value: "true"
+      - key: API_KEYS
+        sync: false
+      - key: CF_ACCOUNT_ID
+        sync: false
+      - key: CF_API_TOKEN
+        sync: false

@@ -30,6 +30,6 @@ Feature: Trace and measure every request
     Given the HR Assistant with the fake model
     When I ask "¿Quién es EMP-0004?" with the request id "demo-123"
     And I read the metrics
-    Then the metrics count 1 request with p50 and p95 of 5.0 ms
+    Then the metrics count 1 request with p50 and p95 equal to its logged latency
     And the metrics report the tokens of that answer
     And the SLO is met

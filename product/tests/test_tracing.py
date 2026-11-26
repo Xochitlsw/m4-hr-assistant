@@ -87,3 +87,4 @@ def test_traced_requests_use_the_hiding_client_and_carry_the_request_id(make_cli
         assert body.get("inputs") in (None, {})
         assert body.get("outputs") in (None, {})
         assert body["extra"]["metadata"]["request_id"] == "demo-123"
+        assert body["extra"]["metadata"]["client"] == "tests"
