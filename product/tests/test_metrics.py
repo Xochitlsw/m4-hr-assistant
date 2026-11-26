@@ -55,3 +55,11 @@ def test_only_the_latest_latencies_and_all_tokens_are_kept():
     assert snapshot["requests"] == 4
     assert snapshot["latency_ms"]["p95"] == 3.0
     assert snapshot["tokens"] == {"input": 15, "output": 5}
+
+
+def test_the_cost_adds_up():
+    metrics = Metrics(slo_p95_ms=2000)
+    assert metrics.snapshot()["cost_usd"] == 0
+    metrics.add_cost(0.0000834)
+    metrics.add_cost(0.0001)
+    assert metrics.snapshot()["cost_usd"] == 0.0001834

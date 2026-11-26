@@ -15,7 +15,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from app.directory import EmployeeDirectory
-from app.llm import TOOL_RESULT_PREFIX, ChatModel
+from app.llm import TOOL_RESULT_PREFIX, ChatModel, Completion
 from app.tracing import traced
 
 ToolCallback = Callable[[str, dict], None]
@@ -33,6 +33,41 @@ SYSTEM_PROMPT = (
 
 
 @dataclass(frozen=True)
+class Usage:
+    """Consumo sumado de todas las llamadas al modelo de una pregunta.
+
+    :param input_tokens: Tokens de entrada
+    :type input_tokens: int
+    :param output_tokens: Tokens de salida
+    :type output_tokens: int
+    :param cached_calls: Llamadas que contestó la caché del gateway
+    :type cached_calls: int
+    :param cost_usd: Costo en USD (las cacheadas no cuestan)
+    :type cost_usd: float
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_calls: int = 0
+    cost_usd: float = 0.0
+
+    def add(self, completion: Completion) -> "Usage":
+        """Suma una llamada al modelo.
+
+        :param completion: Respuesta de una llamada
+        :type completion: app.llm.Completion
+        :return: El consumo con esa llamada incluida
+        :rtype: Usage
+        """
+        return Usage(
+            input_tokens=self.input_tokens + completion.input_tokens,
+            output_tokens=self.output_tokens + completion.output_tokens,
+            cached_calls=self.cached_calls + int(completion.cached),
+            cost_usd=self.cost_usd + completion.cost_usd,
+        )
+
+
+@dataclass(frozen=True)
 class AgentResult:
     """Resultado de una pregunta.
 
@@ -42,20 +77,27 @@ class AgentResult:
     :type steps: int
     :param tools_used: Herramientas ejecutadas, en orden
     :type tools_used: list[str]
-    :param input_tokens: Tokens de entrada sumados de todos los pasos
-    :type input_tokens: int
-    :param output_tokens: Tokens de salida sumados de todos los pasos
-    :type output_tokens: int
     :param stopped: Por qué terminó: ``answer`` (respondió) o ``max_steps`` (tope)
     :type stopped: str
+    :param usage: Tokens, llamadas cacheadas y costo de todos los pasos
+    :type usage: Usage
     """
 
     answer: str
     steps: int
     tools_used: list[str]
-    input_tokens: int
-    output_tokens: int
     stopped: str
+    usage: Usage
+
+    @property
+    def input_tokens(self) -> int:
+        """Tokens de entrada sumados de todos los pasos."""
+        return self.usage.input_tokens
+
+    @property
+    def output_tokens(self) -> int:
+        """Tokens de salida sumados de todos los pasos."""
+        return self.usage.output_tokens
 
 
 class InvalidReply(ValueError):
@@ -119,23 +161,20 @@ class Agent:
         ]
         messages.append({"role": "user", "content": question})
         tools_used: list[str] = []
-        tokens = [0, 0]
+        usage = Usage()
         for step in range(1, self._max_steps + 1):
             completion = self._complete(messages)
-            tokens[0] += completion.input_tokens
-            tokens[1] += completion.output_tokens
+            usage = usage.add(completion)
             answer, tool_result = self._handle(
                 completion.text, tools_used, on_tool_call
             )
             if answer is not None:
-                return AgentResult(answer, step, tools_used, *tokens, "answer")
+                return AgentResult(answer, step, tools_used, "answer", usage)
             messages.append({"role": "assistant", "content": completion.text})
             messages.append(
                 {"role": "user", "content": TOOL_RESULT_PREFIX + tool_result}
             )
-        return AgentResult(
-            CAP_REACHED, self._max_steps, tools_used, *tokens, "max_steps"
-        )
+        return AgentResult(CAP_REACHED, self._max_steps, tools_used, "max_steps", usage)
 
     def _handle(
         self, text: str, tools_used: list[str], on_tool_call: ToolCallback | None

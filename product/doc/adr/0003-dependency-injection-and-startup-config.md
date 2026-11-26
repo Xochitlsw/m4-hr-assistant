@@ -1,6 +1,6 @@
 # 0003 · Inyección de dependencias y configuración validada al arrancar
 
-Fecha: 2026-11-25 · Estado: aceptada · Sesión 1 (actualizada en la sesión 2)
+Fecha: 2026-11-25 · Estado: aceptada · Sesión 1 (actualizada en las sesiones 2 y 3)
 
 ## Contexto
 
@@ -16,8 +16,13 @@ desplegar, no con la primera pregunta.
   especificación y lanza `ConfigError` con un mensaje claro ante un valor inválido (por ejemplo
   `AGENT_MAX_STEPS=0`). El proceso no arranca.
 - Un `EMPLOYEES_PATH` relativo se resuelve contra la raíz del producto, no contra el directorio actual.
-- Sesión 2: `create_app()` también recibe el reloj (`Clock`), el logger de eventos y las métricas, con los reales
-  por omisión. Así las pruebas fijan la hora y leen el log sin depender de `stdout` ni del tiempo real.
+- Sesión 2: `create_app()` también recibe `observability`, un objeto con el reloj (`Clock`), el logger de
+  eventos, las métricas y las trazas, con los reales por omisión. Así las pruebas fijan la hora y leen el log sin
+  depender de `stdout` ni del tiempo real. La configuración se agrupa por tema (`settings.observability`).
+- Sesión 3: `create_app()` también recibe el `httpx.Client` del modelo real (las pruebas pasan uno con
+  `MockTransport`). Si recibe `model`, ese modelo atiende las dos rutas del enrutador (lo usan las pruebas). Se
+  agregan los grupos `settings.models` (con `gateway`) y `settings.routing`. Los precios (`PRICES_PATH`) se validan
+  al arrancar, igual que los datos.
 
 ## Consecuencias
 

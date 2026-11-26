@@ -41,6 +41,19 @@ def test_validation_errors_also_carry_the_request_id(client):
     assert response.headers["X-Request-ID"] == "val-1"
 
 
+def test_the_window_limits_the_history_sent_to_the_model(make_client, log_records):
+    api = make_client(HISTORY_WINDOW="2")
+    history = [{"role": "user", "content": f"Mensaje {n}"} for n in range(10)]
+    body = {"question": "¿Quién es EMP-0004?", "history": history}
+    response = api.post("/ask", json=body)
+    assert response.status_code == 200
+    assert set(response.json()) >= {"model", "route", "cached_calls", "cost_usd"}
+    run = next(r for r in log_records() if r["event"] == "agent_run")
+    assert (run["history_messages"], run["history_sent"]) == (10, 2)
+    assert run["model"] == response.json()["model"]
+    assert run["cost_usd"] == response.json()["cost_usd"]
+
+
 def test_home_page_shows_the_support_id(client):
     page = client.get("/").text
     assert "Id de soporte" in page

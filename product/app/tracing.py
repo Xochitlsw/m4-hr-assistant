@@ -58,16 +58,18 @@ class Tracer:
         )
 
     @contextmanager
-    def request(self, request_id: str) -> Iterator[None]:
-        """Contexto de una petición: este cliente y el ``request_id`` en metadatos.
+    def request(self, request_id: str, **metadata: str) -> Iterator[None]:
+        """Contexto de una petición: este cliente y sus metadatos.
 
         :param request_id: Id de la petición
         :type request_id: str
+        :param metadata: Metadatos extra (por ejemplo ``model`` y ``route``)
+        :type metadata: str
         """
         with tracing_context(
             enabled=self.enabled,
             client=self.client,
-            metadata={"request_id": request_id},
+            metadata={"request_id": request_id, **metadata},
         ):
             yield
 

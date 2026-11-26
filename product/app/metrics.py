@@ -8,6 +8,7 @@ from collections.abc import Iterable, Sequence
 
 EXCLUDED_PATHS = frozenset({"/health", "/metrics"})
 LATENCY_WINDOW = 1000
+COST_DECIMALS = 8
 
 
 def nearest_rank(values: Sequence[float], percent: float) -> float:
@@ -49,6 +50,7 @@ class Metrics:
         self._latencies: deque[float] = deque(maxlen=window)
         self._counts = {"requests": 0, "errors": 0}
         self._tokens = {"input": 0, "output": 0}
+        self._cost_usd = 0.0
         self._lock = threading.Lock()
 
     def record_request(self, path: str, status: int, latency_ms: float) -> None:
@@ -80,17 +82,27 @@ class Metrics:
             self._tokens["input"] += input_tokens
             self._tokens["output"] += output_tokens
 
+    def add_cost(self, cost_usd: float) -> None:
+        """Suma el costo de una respuesta.
+
+        :param cost_usd: Costo en USD
+        :type cost_usd: float
+        """
+        with self._lock:
+            self._cost_usd += cost_usd
+
     def snapshot(self) -> dict:
         """Arma la respuesta de ``GET /metrics``.
 
-        :return: ``pid``, ``requests``, ``error_rate``, ``latency_ms``, ``tokens`` y
-            ``slo``
+        :return: ``pid``, ``requests``, ``error_rate``, ``latency_ms``, ``tokens``,
+            ``slo`` y ``cost_usd`` acumulado
         :rtype: dict
         """
         with self._lock:
             latencies = list(self._latencies)
             counts = dict(self._counts)
             tokens = dict(self._tokens)
+            cost_usd = self._cost_usd
         requests = counts["requests"]
         p95 = nearest_rank(latencies, 95)
         return {
@@ -100,4 +112,5 @@ class Metrics:
             "latency_ms": {"p50": nearest_rank(latencies, 50), "p95": p95},
             "tokens": tokens,
             "slo": {"p95_ms_target": self._slo_p95_ms, "met": p95 < self._slo_p95_ms},
+            "cost_usd": round(cost_usd, COST_DECIMALS),
         }

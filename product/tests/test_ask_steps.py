@@ -1,7 +1,7 @@
 """Pasos de los escenarios de ``features/ask.feature`` (pytest-bdd).
 
 Los pasos comunes («the HR Assistant with the fake model», «the response status
-is ...») están en ``conftest.py``.
+is ...», «the answer mentions ...») están en ``conftest.py``.
 """
 
 from pytest_bdd import given, parsers, scenarios, then, when
@@ -28,11 +28,6 @@ def ask(api, question):
 )
 def ask_with_length(api, length):
     return api.post("/ask", json={"question": "a" * length})
-
-
-@then(parsers.parse('the answer mentions "{text}"'))
-def answer_mentions(response, text):
-    assert text in response.json()["answer"]
 
 
 @then(parsers.parse('the answer is "{text}"'))

@@ -2,7 +2,7 @@
 
 Las pruebas no dependen de las variables de entorno del proceso: cada una arma su
 configuración con ``load_settings()`` a partir de un diccionario, con un reloj fijo y
-el log en memoria.
+el log en memoria. Nunca salen a la red: el AI Gateway es falso (``FakeGateway``).
 """
 
 import io
@@ -10,12 +10,14 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from pytest_bdd import given, parsers, then
 
 from app.config import load_settings
 from app.directory import EmployeeDirectory
+from app.llm import FakeModel
 from app.logs import EventLogger
 from app.main import Observability, create_app
 from app.metrics import Metrics
@@ -23,6 +25,46 @@ from app.tracing import Tracer
 
 PRODUCT = Path(__file__).resolve().parents[1]
 EMPLOYEES = PRODUCT / "data" / "employees.json"
+SMALL = "@cf/meta/llama-3.1-8b-instruct-fast"
+LARGE = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+GATEWAY_ENV = {
+    "MODEL_PROVIDER": "gateway",
+    "CF_ACCOUNT_ID": "test-account",
+    "CF_API_TOKEN": "test-only-token",
+}
+
+
+class FakeGateway:
+    """AI Gateway falso: contesta como Workers AI con las reglas del modelo simulado.
+
+    :param cache_status: Valor de ``cf-aig-cache-status`` en cada respuesta
+    :param status: Código HTTP de cada respuesta (distinto de 200 simula una caída)
+    """
+
+    def __init__(self, cache_status="MISS", status=200):
+        self.requests = []
+        self.cache_status = cache_status
+        self.status = status
+        departments = EmployeeDirectory.load(EMPLOYEES).departments()
+        self.model = FakeModel(departments)
+
+    def handle(self, request):
+        self.requests.append(request)
+        if self.status != 200:
+            return httpx.Response(self.status, json={"errors": ["unavailable"]})
+        completion = self.model.complete(json.loads(request.content)["messages"])
+        payload = {
+            "choices": [{"message": {"role": "assistant", "content": completion.text}}],
+            "usage": {
+                "prompt_tokens": completion.input_tokens,
+                "completion_tokens": completion.output_tokens,
+            },
+        }
+        headers = {"cf-aig-cache-status": self.cache_status}
+        return httpx.Response(200, json=payload, headers=headers)
+
+    def client(self):
+        return httpx.Client(transport=httpx.MockTransport(self.handle))
 
 
 class FixedClock:
@@ -59,7 +101,7 @@ def log_records(log_stream):
 def make_client(log_stream):
     """Fábrica de clientes HTTP con la configuración y el modelo que pida la prueba."""
 
-    def build(model=None, tracer=None, **env: str) -> TestClient:
+    def build(model=None, tracer=None, http_client=None, **env: str) -> TestClient:
         settings = load_settings(env)
         clock = FixedClock()
         observability = Observability(
@@ -68,7 +110,12 @@ def make_client(log_stream):
             metrics=Metrics(settings.observability.slo_p95_ms),
             tracer=tracer or Tracer(),
         )
-        app = create_app(settings=settings, model=model, observability=observability)
+        app = create_app(
+            settings=settings,
+            model=model,
+            observability=observability,
+            http_client=http_client,
+        )
         return TestClient(app)
 
     return build
@@ -94,3 +141,8 @@ def default_api(make_client):
 @then(parsers.parse("the response status is {status:d}"))
 def response_status(response, status):
     assert response.status_code == status
+
+
+@then(parsers.parse('the answer mentions "{text}"'))
+def answer_mentions(response, text):
+    assert text in response.json()["answer"]

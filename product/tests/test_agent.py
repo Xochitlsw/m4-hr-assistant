@@ -98,3 +98,14 @@ def test_each_executed_tool_is_reported_with_its_args(directory):
     agent = Agent(model, directory, max_steps=3)
     agent.run("¿Quién es EMP-0004?", on_tool_call=lambda *call: reported.append(call))
     assert reported == [("get_employee", {"employee_id": "EMP-0004"})]
+
+
+def test_the_agent_adds_up_cost_and_cached_calls(directory):
+    call = tool_call("get_employee", employee_id="EMP-0004")
+    model = ScriptedModel(
+        Completion(call, 10, 3, cached=True),
+        Completion(json.dumps({"answer": "listo"}), 20, 2, cost_usd=0.00025),
+    )
+    usage = Agent(model, directory, max_steps=3).run("¿Quién es EMP-0004?").usage
+    assert (usage.cached_calls, usage.cost_usd) == (1, 0.00025)
+    assert (usage.input_tokens, usage.output_tokens) == (30, 5)

@@ -1,7 +1,7 @@
 """Interfaz del modelo y modelo simulado determinista (``MODEL_PROVIDER=fake``).
 
 El agente solo conoce :class:`ChatModel`: cambiar de modelo es agregar otra
-implementación de ``complete(messages)`` y registrarla en :func:`build_model`.
+implementación de ``complete(messages)`` y registrarla en ``app.catalog``.
 """
 
 import json
@@ -10,8 +10,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Protocol
 
-from app.config import ConfigError, Settings
-from app.directory import EmployeeDirectory, normalize
+from app.directory import normalize
 
 TOOL_RESULT_PREFIX = "Resultado de la herramienta: "
 EMPLOYEE_ID = re.compile(r"\bEMP-\d{4}\b")
@@ -28,11 +27,17 @@ class Completion:
     :type input_tokens: int
     :param output_tokens: Tokens de salida de la llamada
     :type output_tokens: int
+    :param cached: La contestó la caché del gateway (no cuesta)
+    :type cached: bool
+    :param cost_usd: Costo de la llamada en USD (lo calcula ``app.pricing``)
+    :type cost_usd: float
     """
 
     text: str
     input_tokens: int
     output_tokens: int
+    cached: bool = False
+    cost_usd: float = 0.0
 
 
 class ChatModel(Protocol):
@@ -102,19 +107,3 @@ class FakeModel:
             if re.search(rf"\b{re.escape(key)}\b", normalized):
                 return name
         return None
-
-
-def build_model(settings: Settings, directory: EmployeeDirectory) -> ChatModel:
-    """Crea el modelo que pide ``MODEL_PROVIDER``.
-
-    :param settings: Configuración validada
-    :type settings: Settings
-    :param directory: Directorio, del que el modelo simulado toma los departamentos
-    :type directory: EmployeeDirectory
-    :return: El modelo listo para el agente
-    :rtype: ChatModel
-    :raises ConfigError: Si el proveedor no existe
-    """
-    if settings.model_provider != "fake":
-        raise ConfigError(f"MODEL_PROVIDER not supported: {settings.model_provider!r}")
-    return FakeModel(directory.departments())
