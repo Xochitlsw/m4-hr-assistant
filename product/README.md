@@ -16,7 +16,12 @@ Arquitectura y decisiones: [`doc/architecture.md`](doc/architecture.md), [`doc/a
 ## Requisitos
 
 - Python 3.12 y [uv](https://docs.astral.sh/uv/).
-- Las dependencias de `requirements.txt` (en la fábrica, el mismo entorno de la raíz).
+- Dependencias, en locks con versiones y hashes (ADR 0015):
+  - `requirements.txt`: solo las de ejecución; es lo único que instala la imagen.
+  - `requirements-dev.txt`: las de ejecución, con las mismas versiones, más pruebas, pylint, Playwright, PyYAML y
+    pip-audit. Para desarrollar: `uv pip install --require-hashes -r requirements-dev.txt`.
+  - Para cambiar una versión, edita `requirements.in` o `requirements-dev.in` y regenera el lock con el comando
+    de su encabezado (`uv pip compile ... --generate-hashes`).
 - Para el modelo real: una cuenta de Cloudflare con Workers AI y un AI Gateway (por omisión, `default`).
 - Para publicar: una cuenta de GitHub y otra de Render. Docker es opcional: el CI construye la imagen.
 
@@ -206,20 +211,27 @@ funciona igual y no se conecta.
 
 Nada se publica sin que una persona lo apruebe. Las piezas:
 
-- **Contenedor** (`Dockerfile`): `python:3.12-slim`, usuario sin privilegios, solo `app/` y `data/`, escucha en
-  `${PORT:-8000}` con `--no-access-log` y tiene `HEALTHCHECK`. `.dockerignore` deja fuera `.env`, las pruebas y los
-  cachés.
-- **CI** (`.github/workflows/ci.yml`): en cada push y pull request, cuatro etapas encadenadas que se ven en la
-  pestaña Actions: `style` (pylint) → `unit` (pruebas, cobertura >= 80 %) → `e2e` (Playwright con el modelo
-  simulado) → `docker` (construye la imagen).
-- **Render** (`render.yaml`): Blueprint con el servicio `m4-hr-assistant` (el mismo nombre del repositorio),
-  `runtime: docker`, `plan: free`, `healthCheckPath: /health` y `autoDeployTrigger: checksPass` (publica solo si
-  el CI pasa). Declara `ENVIRONMENT=production`, `MODEL_PROVIDER=gateway` y `HIDE_*=redact` (trazas
+- **Contenedor** (`Dockerfile`): `python:3.12-slim`, solo el lock de ejecución (`--require-hashes --no-deps`),
+  usuario sin privilegios, solo `app/` y `data/` (propiedad de root: el proceso los lee, no los cambia), escucha
+  en `${PORT:-8000}` con `--no-access-log` y tiene `HEALTHCHECK`. `.dockerignore` deja fuera `.env`, las pruebas,
+  los locks de desarrollo y los cachés.
+- **CI** (`.github/workflows/ci.yml` en la **raíz** del repositorio, con `working-directory: product`): en cada
+  push y pull request, seis trabajos que se ven en la pestaña Actions (ADR 0015):
+  - `style` (pylint) → `unit` (pruebas, cobertura >= 80 %) → `e2e` (Playwright con el modelo simulado) → `docker`
+    (construye la imagen y comprueba que corre como el usuario `10001`, sin pytest, con `HEALTHCHECK` en
+    `healthy` y con la prueba de humo en `[OK]`).
+  - `factory`: las verificaciones de la fábrica (`scripts/verify.py` y `verification unit`, `contract`, `qa`,
+    `e2e`, `evaluate`).
+  - `security`: `pip-audit` de los locks y `gitleaks` de todo el historial (`.gitleaks.toml`).
+  Cada acción va fijada al SHA de su commit y cada `pip install` usa `--require-hashes`.
+- **Render** (`render.yaml` en la **raíz**, con `rootDir: product`): Blueprint con el servicio `m4-hr-assistant`
+  (el mismo nombre del repositorio), `runtime: docker`, `plan: free`, `healthCheckPath: /health` y
+  `autoDeployTrigger: checksPass` (publica solo si todos los trabajos del CI pasan). Declara `ENVIRONMENT=production`, `MODEL_PROVIDER=gateway` y `HIDE_*=redact` (trazas
   redactadas).
 
 Para publicar, una vez aprobado:
 
-1. Sube el repositorio a GitHub y revisa en **Actions** que las cuatro etapas pasen.
+1. Sube el repositorio a GitHub y revisa en **Actions** que los seis trabajos pasen.
 2. En Render: **New > Blueprint**, elige el repositorio. El resumen debe decir **Create web service** (si dice
    Update, ya existe un servicio con ese nombre).
 3. Escribe en Render los secretos `API_KEYS`, `CF_ACCOUNT_ID` y `CF_API_TOKEN` (nunca en el repositorio ni en un

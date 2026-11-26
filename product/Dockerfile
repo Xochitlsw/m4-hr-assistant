@@ -1,5 +1,7 @@
-# HR Assistant: imagen de producción.
+# HR Assistant: imagen de producción (ADR 0012 y 0015).
 # python:3.12-slim, usuario sin privilegios y solo el código y los datos de la app.
+# Solo las dependencias de ejecución, del lock con versiones y hashes: nada de pytest,
+# pylint ni Playwright en producción.
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -10,9 +12,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # Primero las dependencias: la capa se reutiliza mientras requirements.txt no cambie.
+# --require-hashes: pip rechaza cualquier archivo cuyo hash no coincida con el lock.
+# --no-deps: el lock ya trae todas las dependencias; pip no resuelve nada por su cuenta.
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --require-hashes --no-deps -r requirements.txt
 
+# El código y los datos quedan del usuario root: el proceso los lee, no los cambia.
 COPY app/ app/
 COPY data/ data/
 

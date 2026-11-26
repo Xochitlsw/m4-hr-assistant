@@ -1,0 +1,12 @@
+# Herramientas de desarrollo y CI: pruebas, estilo, e2e, auditoria y lectura de YAML.
+# Incluye las de ejecucion con las mismas versiones del lock (requirements.txt).
+-c requirements.txt
+-r requirements.in
+pytest==9.2.0
+pytest-bdd==9.0.1
+pytest-cov==7.1.0
+pylint==4.1.4
+playwright==1.65.2
+pytest-playwright==0.10.0
+pyyaml==6.0.4
+pip-audit>=2.7

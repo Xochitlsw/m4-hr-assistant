@@ -1,0 +1,8 @@
+# Dependencias de ejecucion del HR Assistant: las instala la imagen (Dockerfile).
+# El lock con versiones y hashes es requirements.txt; se regenera con el comando de
+# su encabezado (README, Dependencias). Versiones probadas por las 5 compuertas.
+fastapi==0.165.0
+uvicorn==0.54.0
+pydantic==2.14.4
+langsmith==0.16.2
+httpx==0.28.1

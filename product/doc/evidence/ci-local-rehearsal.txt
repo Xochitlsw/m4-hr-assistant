@@ -1,0 +1,23 @@
+# Ensayo local del CI (bloque 1, 2026-11-26)
+# Mismos comandos que .github/workflows/ci.yml, en dos entornos limpios de Python 3.12:
+# - runtime: solo product/requirements.txt, instalado con pip --require-hashes --no-deps (como el Dockerfile)
+# - ci: product/requirements-dev.txt; trabajos style, unit, e2e, factory y security
+# La clave es el valor de ejemplo del CI (no es un secreto). Docker no corre en este equipo:
+# el trabajo docker se comprueba en GitHub Actions.
+
+[OK] runtime: pip install --require-hashes --no-deps -r requirements.txt (código 0, 61.4 s) :: 
+[OK] runtime: pytest NO está instalado (código 1, 0.7 s) :: Traceback (most recent call last): |   File "<string>", line 1, in <module> | ModuleNotFoundError: No module named 'pytest'
+[OK] runtime: scripts/smoke.py contra la app con solo dependencias de ejecución (código 0, 2.8 s) :: [OK] GET /health -> 200 (esperado 200) |   [OK] POST /ask sin clave -> 401 (esperado 401) |   [OK] POST /ask con clave -> 200 (esperado 200)
+[OK] ci: instalar requirements-dev.txt (--require-hashes --no-deps) (código 0, 11.3 s) :: 
+[OK] style: pylint app tests (código 0, 36.8 s) :: -------------------------------------------------------------------- | Your code has been rated at 10.00/10 (previous run: 10.00/10, +0.00)
+[OK] unit: pytest tests --cov=app --cov-fail-under=80 (código 0, 50.6 s) :: TOTAL                1045     16    98% | Required test coverage of 80% reached. Total coverage: 98.47% | 180 passed in 10.44s
+[OK] e2e: pytest e2e --base-url (código 0, 37.9 s) ::  | -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html | 6 passed, 1 warning in 28.46s
+[OK] factory: python scripts/verify.py (código 0, 34.1 s) ::   [OK] Tests and coverage >= 80% |   [OK] Pylint |   [OK] No emojis
+[OK] factory: python -m verification unit (código 0, 23.8 s) :: Required test coverage of 80% reached. Total coverage: 98.47% | 180 passed in 8.53s | [OK] unit
+[OK] factory: python -m verification contract (código 0, 44.1 s) :: ......................                                                   [100%] | 22 passed in 31.81s | [OK] contract
+[OK] factory: python -m verification qa (código 0, 22.9 s) :: Your code has been rated at 10.00/10 (previous run: 10.00/10, +0.00) |  | [OK] qa
+[OK] factory: python -m verification e2e (código 0, 44.3 s) :: INFO:     Waiting for application startup. | INFO:     Application startup complete. | INFO:     Uvicorn running on http://127.0.0.1:8769 (Press CTRL+C to quit)
+[OK] factory: python -m verification evaluate (código 0, 22.3 s) :: INFO:     Waiting for application startup. | INFO:     Application startup complete. | INFO:     Uvicorn running on http://127.0.0.1:8768 (Press CTRL+C to quit)
+[OK] security: pip_audit de los dos locks (código 0, 11.7 s) :: No known vulnerabilities found
+
+Resumen: 14 de 14 en OK

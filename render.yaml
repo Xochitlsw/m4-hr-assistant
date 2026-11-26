@@ -1,13 +1,17 @@
-# Blueprint de Render para el HR Assistant.
+# Blueprint de Render para el HR Assistant (ADR 0012 y 0015).
+# Vive en la raíz del repositorio, donde Render lo busca; el producto está en product/
+# (rootDir). Con rootDir, dockerfilePath y dockerContext son relativos a product/ y
+# por omisión valen ./Dockerfile y product/, así que no se escriben.
 # El servicio se llama igual que el repositorio, para no actualizar por error un
-# servicio que ya exista en la cuenta. Render publica solo si el CI pasa
-# (autoDeployTrigger: checksPass). Los secretos llevan sync: false: se escriben en
+# servicio que ya exista en la cuenta. Render publica solo si todos los trabajos del CI
+# pasan (autoDeployTrigger: checksPass). Los secretos llevan sync: false: se escriben en
 # Render > Environment, nunca en este archivo. LANGSMITH_API_KEY no va aquí: se agrega
 # en Render > Environment si se encienden las trazas.
 services:
   - type: web
     name: m4-hr-assistant
     runtime: docker
+    rootDir: product
     plan: free
     healthCheckPath: /health
     autoDeployTrigger: checksPass

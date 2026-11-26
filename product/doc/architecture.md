@@ -27,6 +27,8 @@ Decisiones:
 - [ADR 0013](adr/0013-input-and-output-validation.md): validación de entradas y de salidas.
 - [ADR 0014](adr/0014-personal-data-secrets-and-redacted-traces.md): datos personales y secretos; trazas
   redactadas.
+- [ADR 0015](adr/0015-root-ci-locked-dependencies-and-supply-chain.md): CI y Blueprint en la raíz, dependencias
+  fijadas con hashes y cadena de suministro.
 
 ## Componentes
 
@@ -134,8 +136,8 @@ falla, `500` genérico. Al arrancar, `load_settings()` valida los valores (inclu
 ```mermaid
 flowchart LR
   dev(["Persona"]) -- "git push (tras aprobar)" --> gh[("GitHub")]
-  gh --> ci["GitHub Actions<br/>style → unit → e2e → docker"]
-  ci -- "checks en verde" --> render["Render<br/>Blueprint · runtime docker · plan free"]
+  gh --> ci["GitHub Actions (.github/workflows/ci.yml en la raíz)<br/>style → unit → e2e → docker<br/>factory · security"]
+  ci -- "checks en verde" --> render["Render (render.yaml en la raíz)<br/>rootDir product · runtime docker · plan free"]
   render -- "healthCheckPath /health" --> svc["Servicio web<br/>contenedor sin root"]
   secrets[/"Render > Environment<br/>API_KEYS · CF_ACCOUNT_ID · CF_API_TOKEN"/] -.-> svc
   smoke["scripts/smoke.py<br/>SMOKE_API_KEY"] -- "/health · /ask sin y con clave" --> svc
@@ -143,15 +145,15 @@ flowchart LR
 
 | Pieza | Archivo | Qué garantiza |
 | --- | --- | --- |
-| Contenedor | `Dockerfile`, `.dockerignore` | `python:3.12-slim`, usuario sin privilegios, solo `app/` y `data/`, `--no-access-log`, `HEALTHCHECK` |
-| Pipeline | `.github/workflows/ci.yml` | Cuatro etapas encadenadas en cada push y pull request |
-| Publicación | `render.yaml` | Servicio con el nombre del repositorio; despliega solo con checks en verde; secretos con `sync: false` |
+| Contenedor | `Dockerfile`, `.dockerignore` | `python:3.12-slim`, solo el lock de ejecución con hashes, usuario sin privilegios, solo `app/` y `data/`, `--no-access-log`, `HEALTHCHECK` |
+| Dependencias | `requirements.txt`, `requirements-dev.txt` (y sus `.in`) | Ejecución y desarrollo separados; todo fijado con hashes (`uv pip compile --universal`) |
+| Pipeline | `.github/workflows/ci.yml` (raíz) | `style → unit → e2e → docker` encadenados, más `factory` (verificaciones de la fábrica) y `security` (pip-audit y gitleaks); acciones por SHA |
+| Publicación | `render.yaml` (raíz) | `rootDir: product`; servicio con el nombre del repositorio; despliega solo con checks en verde; secretos con `sync: false` |
 | Prueba de humo | `scripts/smoke.py` | `/health` 200, `/ask` sin clave 401, `/ask` con clave 200 |
 | Reglas | `doc/compliance-checklist.md` | Cada regla de producción, dónde está en el código y cómo se comprueba |
 
-El CI y el Blueprint están dentro de `product/`, como si `product/` fuera la raíz de su propio repositorio. En un
-repositorio donde `product/` es una subcarpeta, el CI va en `.github/workflows/` de la raíz y el Blueprint indica
-`rootDir: product`.
+El CI y el Blueprint viven en la raíz del repositorio, donde GitHub y Render los buscan; el producto está en
+`product/` (ADR 0015).
 
 ## Costos
 

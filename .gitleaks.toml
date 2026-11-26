@@ -1,0 +1,18 @@
+# Configuración de gitleaks para el trabajo security del CI (ADR 0015).
+# Usa todas las reglas por omisión. Solo se permiten los valores de ejemplo de las
+# pruebas y del CI, que siguen un formato fijo y no sirven en ningún otro lugar:
+# «<nombre>-key-0123456789» (y sus variantes cortas «...-0123456») y «test-only-...».
+# No se excluye ninguna carpeta: un secreto real en cualquier archivo o commit falla.
+
+title = "HR Assistant"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Valores de ejemplo de las pruebas y del CI (no son secretos)"
+regexes = [
+  '''(?i)\b[a-z]+(?:-[a-z]+)*-key-0123456789\b''',
+  '''(?i)\b[a-z]+(?:-[a-z]+)*-0123456\b''',
+  '''\btest-only-(?:token|key)\b''',
+]
