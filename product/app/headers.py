@@ -5,8 +5,9 @@ no-referrer``, aislamiento de origen, una ``Permissions-Policy`` que apaga cáma
 micrófono, ubicación y pagos, y ``Cache-Control: no-store`` (nada de la API se guarda en
 cachés ni en el navegador). La ``Content-Security-Policy`` depende de la ruta:
 
-- ``/``: solo el ``<script>`` y el ``<style>`` en línea de la página, por su hash
-  SHA-256; ``fetch`` solo al mismo origen. Si alguien inyectara un script, no correría.
+- ``/`` y ``/dashboard``: solo el ``<script>`` y el ``<style>`` en línea de cada página,
+  por su hash SHA-256; ``fetch`` solo al mismo origen. Si alguien inyectara un script,
+  no correría.
 - ``/docs``: Swagger UI se carga de cdn.jsdelivr.net y su arranque es un script en línea
   que arma FastAPI; esa página no tiene datos de personas.
 - Lo demás (JSON): ``default-src 'none'``.
@@ -91,20 +92,20 @@ def page_policy(html: str) -> str:
     )
 
 
-def headers_for(path: str, page: str, production: bool) -> dict[str, str]:
+def headers_for(path: str, pages: dict[str, str], production: bool) -> dict[str, str]:
     """Cabeceras de seguridad para una ruta.
 
     :param path: Ruta de la petición
     :type path: str
-    :param page: CSP de la página (:func:`page_policy`)
-    :type page: str
+    :param pages: CSP de cada página propia, por ruta (:func:`page_policy`)
+    :type pages: dict[str, str]
     :param production: ``True`` con ``ENVIRONMENT=production`` (agrega HSTS)
     :type production: bool
     :return: Cabeceras a poner en la respuesta
     :rtype: dict[str, str]
     """
-    if path == "/":
-        policy = page
+    if path in pages:
+        policy = pages[path]
     elif path in DOCS_PATHS:
         policy = DOCS_POLICY
     else:
@@ -115,23 +116,23 @@ def headers_for(path: str, page: str, production: bool) -> dict[str, str]:
     return headers
 
 
-def add_security_headers(app: FastAPI, html: str, production: bool) -> None:
+def add_security_headers(app: FastAPI, pages: dict[str, str], production: bool) -> None:
     """Middleware que pone las cabeceras en toda respuesta, también en los errores.
 
     Se agrega al final para quedar por fuera de todos los demás.
 
     :param app: La aplicación
     :type app: fastapi.FastAPI
-    :param html: Página servida en ``/``
-    :type html: str
+    :param pages: HTML de cada página propia, por ruta (``/`` y ``/dashboard``)
+    :type pages: dict[str, str]
     :param production: ``True`` con ``ENVIRONMENT=production``
     :type production: bool
     """
-    page = page_policy(html)
+    policies = {path: page_policy(html) for path, html in pages.items()}
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next: Callable):
         """Pone las cabeceras de la ruta en la respuesta."""
         response = await call_next(request)
-        response.headers.update(headers_for(request.url.path, page, production))
+        response.headers.update(headers_for(request.url.path, policies, production))
         return response

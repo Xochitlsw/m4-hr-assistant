@@ -19,7 +19,7 @@ from dataclasses import dataclass
 
 from app.directory import EmployeeDirectory, normalize
 from app.llm import TOOL_RESULT_PREFIX, ChatModel, Completion
-from app.tracing import traced
+from app.tracing import completion_outputs, traced
 
 ToolCallback = Callable[[str, dict], None]
 InvalidReplyCallback = Callable[[str], None]
@@ -135,13 +135,28 @@ class Agent:
     :type directory: EmployeeDirectory
     :param max_steps: Tope de llamadas al modelo por pregunta
     :type max_steps: int
+    :param model_metadata: Metadatos de las trazas del modelo (``ls_model_name``,
+        ``ls_provider``)
+    :type model_metadata: dict | None
     """
 
-    def __init__(self, model: ChatModel, directory: EmployeeDirectory, max_steps: int):
+    def __init__(
+        self,
+        model: ChatModel,
+        directory: EmployeeDirectory,
+        max_steps: int,
+        model_metadata: dict | None = None,
+    ):
         self._directory = directory
         self._max_steps = max_steps
         self._departments = {normalize(name): name for name in directory.departments()}
-        self._complete = traced("llm", "model", model.complete)
+        self._complete = traced(
+            "llm",
+            "model",
+            model.complete,
+            metadata=model_metadata,
+            process_outputs=completion_outputs,
+        )
         # nombre -> (argumento, validador que normaliza, herramienta)
         self._tools = {
             "get_employee": (

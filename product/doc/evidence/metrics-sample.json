@@ -1,0 +1,104 @@
+{
+  "requests": [
+    {
+      "case": "simple",
+      "status": 200,
+      "request_id": "a8296030-c137-42f2-b133-e7989015baf5"
+    },
+    {
+      "case": "complex",
+      "status": 200,
+      "request_id": "581b880a-2d98-4ed6-8f79-53109dbe0050"
+    },
+    {
+      "case": "personal_data",
+      "status": 200,
+      "request_id": "e80c1d26-afd9-4cea-914c-c3a122a811a2"
+    },
+    {
+      "case": "injection",
+      "status": 400,
+      "request_id": "5ca363c1-bbe3-4c77-82f3-b59be703dab2"
+    },
+    {
+      "case": "secret",
+      "status": 400,
+      "request_id": "34ae8413-fa91-4f1f-af0d-c8b086b6b944"
+    },
+    {
+      "case": "wrong_key",
+      "status": 401,
+      "request_id": "b88efd3a-2dec-47e6-b12f-87696eb02a0a"
+    }
+  ],
+  "metrics": {
+    "pid": 25784,
+    "requests": 6,
+    "error_rate": 0.0,
+    "latency_ms": {
+      "p50": 5.596,
+      "p95": 9.453
+    },
+    "tokens": {
+      "input": 422,
+      "output": 96
+    },
+    "slo": {
+      "p95_ms_target": 2000,
+      "met": true
+    },
+    "cost_usd": 0.0001911,
+    "latency_p99_ms": 9.453,
+    "by_status": {
+      "200": 3,
+      "400": 2,
+      "401": 1
+    },
+    "by_model": {
+      "@cf/meta/llama-3.1-8b-instruct-fast": {
+        "answers": 2,
+        "input_tokens": 261,
+        "output_tokens": 45,
+        "cost_usd": 2.903e-05
+      },
+      "@cf/meta/llama-3.3-70b-instruct-fp8-fast": {
+        "answers": 1,
+        "input_tokens": 161,
+        "output_tokens": 51,
+        "cost_usd": 0.00016208
+      }
+    },
+    "by_route": {
+      "simple": 2,
+      "keyword:compara": 1
+    },
+    "by_client": {
+      "local": {
+        "answers": 3,
+        "cost_usd": 0.00019111,
+        "rate_limited": 0,
+        "budget_exceeded": 0
+      }
+    },
+    "cache_hit_rate": 0.0,
+    "cost_per_answer_usd": 6.37e-05,
+    "errors_by_type": {},
+    "security": {
+      "pii_detected": 1,
+      "injection_blocked": 1,
+      "secret_blocked": 1,
+      "auth_failed": 1
+    },
+    "business": {
+      "answers": 3,
+      "tools": {
+        "get_employee": 2,
+        "search_by_department": 1
+      },
+      "stopped_at_step_cap": 0,
+      "fallbacks": 0,
+      "model_retries": 0,
+      "rejected_rate": 0.5
+    }
+  }
+}

@@ -63,3 +63,70 @@ def test_the_cost_adds_up():
     metrics.add_cost(0.0000834)
     metrics.add_cost(0.0001)
     assert metrics.snapshot()["cost_usd"] == 0.0001834
+
+
+def answer(model="small", route="simple", client="portal", **extra):
+    """Un evento ``agent_run`` como lo escribe ``AskService``."""
+    record = {
+        "event": "agent_run",
+        "client": client,
+        "model": model,
+        "route": route,
+        "steps": 2,
+        "tools": ["get_employee"],
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "cached_calls": 0,
+        "cost_usd": 0.001,
+        "stopped": "answer",
+        "model_retries": 0,
+    }
+    record.update(extra)
+    return record
+
+
+def test_the_log_feeds_the_breakdowns_by_model_route_and_client():
+    metrics = Metrics(slo_p95_ms=2000)
+    metrics.observe(answer())
+    metrics.observe(answer(model="large", route="keyword:compara", cost_usd=0.003,
+                           cached_calls=1, tools=["search_by_department"]))
+    metrics.observe(answer(client="ops", stopped="max_steps", tools=[],
+                           model_retries=2))
+    metrics.observe({"event": "model_fallback"})
+    snapshot = metrics.snapshot()
+    assert snapshot["by_model"]["large"] == {
+        "answers": 1,
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "cost_usd": 0.003,
+    }
+    assert snapshot["by_route"] == {"simple": 2, "keyword:compara": 1}
+    assert snapshot["by_client"]["portal"]["answers"] == 2
+    assert snapshot["cache_hit_rate"] == round(1 / 6, 4)
+    assert snapshot["cost_per_answer_usd"] == round(0.005 / 3, 8)
+    business = snapshot["business"]
+    assert business["answers"] == 3
+    assert business["tools"] == {"get_employee": 1, "search_by_department": 1}
+    assert (business["stopped_at_step_cap"], business["fallbacks"]) == (1, 1)
+    assert business["model_retries"] == 2
+
+
+def test_security_events_errors_and_statuses_are_counted():
+    metrics = Metrics(slo_p95_ms=2000)
+    for status in (200, 200, 401, 429, 400, 502):
+        metrics.record_request("/ask", status, 10.0)
+    for action in ("auth_failed", "injection_blocked", "tool_call", "startup"):
+        metrics.observe({"event": "audit", "action": action, "client": "portal"})
+    metrics.observe({"event": "audit", "action": "rate_limited", "client": "portal"})
+    metrics.observe({"event": "error", "error_type": "ModelUnavailable"})
+    snapshot = metrics.snapshot()
+    assert snapshot["by_status"] == {"200": 2, "400": 1, "401": 1, "429": 1, "502": 1}
+    assert snapshot["security"] == {
+        "auth_failed": 1,
+        "injection_blocked": 1,
+        "rate_limited": 1,
+    }
+    assert snapshot["by_client"]["portal"]["rate_limited"] == 1
+    assert snapshot["errors_by_type"] == {"ModelUnavailable": 1}
+    assert snapshot["business"]["rejected_rate"] == round(3 / 6, 4)
+    assert snapshot["latency_p99_ms"] == 10.0

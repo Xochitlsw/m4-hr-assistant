@@ -34,3 +34,18 @@ palancas de costo se deben poder medir con los dos modelos.
 - El adaptador tolerante puede convertir en respuesta un texto que debió ser una herramienta; la calidad real se
   mide con la muestra del modelo real.
 - Sin reintentos ni circuit breaker todavía: una falla del proveedor llega a la persona como un `502` claro.
+
+## Actualización (2026-11-26): «Authenticated Gateway» apagado y la caché
+
+- El gateway `default` de la cuenta tenía activada su propia autenticación y respondía `401` (código 2009) a las
+  llamadas con el token de Workers AI; Workers AI directo sí respondía. Decisión de la persona: apagar
+  «Authenticated Gateway».
+- Cada llamada sigue exigiendo el token de Workers AI (`Authorization: Bearer`): sin él, el proveedor la rechaza.
+  Lo que se pierde es una segunda credencial, propia del gateway.
+- La caché del gateway sigue **apagada** (`CACHE_TTL_SECONDS=0`). Con el gateway sin autenticación propia, una
+  respuesta en caché podría servirse a quien repita la misma petición; con la caché apagada, cada respuesta sale
+  del proveedor y exige el token.
+- La palanca 4 (caché) se documenta y se mide en el análisis de costos, pero no se enciende en producción mientras
+  el gateway no tenga autenticación propia.
+- Reintentos, circuit breaker y fallback, que este ADR dejaba pendientes, están en el ADR 0018. Las llamadas
+  llevan el `request_id` en `cf-aig-metadata` (ADR 0021).

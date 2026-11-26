@@ -131,3 +131,44 @@ def test_redacted_traces_keep_the_directory_and_drop_personal_data(make_client):
     assert CURP not in sent and EMAIL not in sent
     for useful in ("EMP-0004", "Jorge Díaz", "[REDACTED:CURP]", "[REDACTED:EMAIL]"):
         assert useful in sent
+
+
+def runs_by_name(recorder):
+    """Las corridas enviadas, por nombre, con lo que tenga el cuerpo final."""
+    runs = {}
+    for body in recorder.bodies:
+        run = runs.setdefault(body.get("id"), {})
+        run.update({key: value for key, value in body.items() if value is not None})
+    named = {}
+    for run in runs.values():
+        named.setdefault(run.get("name"), []).append(run)
+    return named
+
+
+def test_each_question_is_one_tree_with_useful_metadata(make_client):
+    recorder = Recorder()
+    tracer = Tracer.from_settings(load_settings(REDACTED_TRACES), recorder.client)
+    api = make_client(tracer=tracer)
+    api.post(
+        "/ask",
+        json={"question": "¿Quién es EMP-0004?"},
+        headers={"X-Request-ID": "tree-1"},
+    )
+    named = runs_by_name(recorder)
+    [ask] = named["ask"]
+    [agent_run] = named["agent_run"]
+    models = named["model"]
+    [tool] = named["get_employee"]
+    assert agent_run["parent_run_id"] == ask["id"]
+    assert {run["parent_run_id"] for run in models} == {agent_run["id"]}
+    assert tool["parent_run_id"] == agent_run["id"]
+    metadata = ask["extra"]["metadata"]
+    for key in ("request_id", "client", "environment", "model", "route", "cost_usd",
+                "steps", "stopped", "cached_calls", "model_retries", "fallback"):
+        assert key in metadata, key
+    assert (metadata["route"], metadata["fallback"]) == ("simple", False)
+    assert "hr-assistant" in ask.get("tags", [])
+    llm = models[0]["extra"]["metadata"]
+    assert llm["ls_model_name"] == "@cf/meta/llama-3.1-8b-instruct-fast"
+    assert llm["ls_provider"] == "fake"
+    assert llm["usage_metadata"]["total_tokens"] > 0

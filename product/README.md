@@ -68,6 +68,7 @@ responde o se agota la cuota, `POST /ask` responde `502 {"detail": "model unavai
 | `GET /` | No | La página web |
 | `GET /health` | No | Prueba de vida: `{"status": "ok", "pid": ...}` (Render la usa) |
 | `GET /ready` | No | Disponibilidad: `200` si el directorio está cargado y algún modelo tiene el circuito cerrado; `503` si no. Nunca llama al modelo |
+| `GET /dashboard` | No (la página pide la clave) | Tablero de operación de este proceso: lee `/metrics` y lo muestra en tarjetas y tablas |
 | `GET /docs` | No | Documentación interactiva (Swagger) con **Authorize** para `X-API-Key`, cada error con su ejemplo; el contrato exportado está en [`doc/openapi.json`](doc/openapi.json) |
 | `POST /ask` | `X-API-Key` | Cuerpo `{"question": "...", "history": [...]}`; responde `answer`, `steps`, `tools_used`, `input_tokens`, `output_tokens`, `request_id`, `model`, `route`, `cached_calls` y `cost_usd` |
 | `GET /metrics` | `X-API-Key` | Peticiones, `error_rate`, latencia p50/p95, tokens, SLO y `cost_usd` acumulado de este proceso |
@@ -234,35 +235,36 @@ Detalle y razones en el ADR 0019.
 
 ## Observabilidad
 
-**Log**: una línea JSON por evento en la salida estándar, con `ts` (UTC), `service`, `event` y `request_id`.
-Las letras con acento y otros caracteres no ASCII se escriben escapados (la «í» queda como una barra invertida
-seguida de `u00ed`), así la línea es JSON válido en cualquier consola. Eventos:
+Detalle y runbook en [`doc/observability.md`](doc/observability.md) (ADR 0021). Todo se une por el `request_id`,
+el «Id de soporte» de la página.
 
-- `request`: `client` (si se autenticó), `method`, `path`, `status`, `latency_ms`.
-- `agent_run`: `client`, `question_chars`, `history_messages` (recibidos), `history_sent` (enviados al modelo),
-  `steps`, `tools`, `input_tokens`, `output_tokens`, `stopped` (`answer` o `max_steps`), `model`, `route`,
-  `cached_calls` y `cost_usd`. Nunca el texto de la pregunta ni de la respuesta.
-- `audit`: `tool_call` (`client`, `tool`, `args`), `auth_failed` (`reason`: `missing` o `invalid`, `path`) y
-  `rate_limited` (`client`, `retry_after`). Nunca la clave.
-- `error`: `error_type` (sin mensaje ni traza); `ModelUnavailable` cuando falla el modelo real.
+- **Log**: una línea JSON por evento con `ts`, `service`, `event`, `request_id`, `level`, `environment` y
+  `version`. Eventos: `request`, `agent_run`, `audit` (13 acciones), `model_fallback`, `model_circuit` y
+  `error`. Nunca texto de preguntas o respuestas, claves, datos personales ni IP. Las letras con acento se
+  escriben escapadas (la «í» queda como una barra invertida seguida de `u00ed`), así la línea es JSON válido en
+  cualquier consola. El contenedor usa `--no-access-log` y `--log-level warning`: solo líneas JSON.
+- **Métricas**: `GET /metrics` (con clave) mantiene `requests`, `error_rate`, `latency_ms` (p50 y p95), `tokens`,
+  `slo` y `cost_usd`, y agrega `latency_p99_ms`, desgloses por código, modelo, ruta y cliente, `cache_hit_rate`,
+  costo por respuesta, errores por tipo, contadores de seguridad y métricas de negocio. Son de este proceso.
+- **Dashboard**: `GET /dashboard` muestra esas métricas en tarjetas y tablas (pide la clave de un cliente).
+- **Trazas**: con `LANGSMITH_TRACING=true` y una clave Tracing Only, cada pregunta es un árbol `ask` →
+  `agent_run` → `model` / herramientas, con metadatos (`request_id`, `client`, `environment`, `model`, `route`,
+  `fallback`, `cost_usd`, ...) y los tokens de cada llamada. Van redactadas (`HIDE_*=redact`).
+- **AI Gateway**: cada llamada al modelo real lleva el `request_id` en `cf-aig-metadata`.
 
-Para seguir una petición, filtra la salida del servidor por su Id de soporte:
+Para seguir una petición en local, filtra la salida del servidor por su Id de soporte:
 
 ```bash
-uv run uvicorn app.main:app --no-access-log | grep demo-123              # Bash
-uv run uvicorn app.main:app --no-access-log | Select-String demo-123     # PowerShell
+uv run --env-file .env uvicorn app.main:app --no-access-log | grep demo-123              # Bash
+uv run --env-file .env uvicorn app.main:app --no-access-log | Select-String demo-123     # PowerShell
 ```
 
-**Métricas**: `GET /metrics` (con clave) cuenta el tráfico de usuarios de este proceso (no cuenta `/health` ni
-`/metrics`). El p50 y el p95 salen de las últimas 1000 latencias; `error_rate` cuenta solo respuestas `5xx`
-(incluido el `502` del modelo real); `slo.met` es `true` si el p95 está por debajo de `SLO_P95_MS`; `cost_usd`
-suma el costo de todas las respuestas.
+Trazas reales desde tu equipo (desde `product/`, con tus claves en `.env`; el script no imprime sus valores):
 
-**Trazas**: con `LANGSMITH_TRACING=true` y `LANGSMITH_API_KEY`, cada corrida del agente, cada llamada al modelo y
-cada herramienta quedan en LangSmith con `request_id`, `client`, `model` y `route` en sus metadatos. Con
-`HIDE_INPUTS`/`HIDE_OUTPUTS` en `true` no se manda el texto; con `redact` (lo que usa este despliegue) se manda con
-los datos personales y los secretos redactados, así la traza sirve para depurar. Sin la clave, el producto
-funciona igual y no se conecta.
+```bash
+uv run --env-file .env python scripts/trace_demo.py          # modelo real
+uv run --env-file .env python scripts/trace_demo.py --fake   # modelo simulado
+```
 
 ## Despliegue
 

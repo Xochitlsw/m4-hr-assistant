@@ -28,6 +28,28 @@
         }
       }
     },
+    "/dashboard": {
+      "get": {
+        "tags": [
+          "operations"
+        ],
+        "summary": "Operations dashboard",
+        "description": "Page with the metrics of this process (it reads `GET /metrics` with the key of a client, kept only in `sessionStorage`). The page has no data.",
+        "operationId": "operations_dashboard_dashboard_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health": {
       "get": {
         "tags": [

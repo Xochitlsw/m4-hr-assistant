@@ -31,7 +31,7 @@ from app.catalog import add_resilience, build_models
 from app.clock import Clock, SystemClock
 from app.config import ConfigError, Settings, load_settings
 from app.directory import EmployeeDirectory
-from app.gateway import ModelUnavailable, build_http_client
+from app.gateway import CURRENT_REQUEST_ID, ModelUnavailable, build_http_client
 from app.headers import add_security_headers
 from app.injection import InjectionFound, detect_injection, merge_rules
 from app.llm import ChatModel
@@ -50,9 +50,10 @@ from app.security import (
     RateLimiter,
     client_origin,
 )
-from app.tracing import Tracer
+from app.tracing import Tracer, annotate, traced
 
 PAGE = Path(__file__).resolve().parent / "static" / "index.html"
+DASHBOARD = Path(__file__).resolve().parent / "static" / "dashboard.html"
 REQUEST_ID_HEADER = "X-Request-ID"
 # Respuestas que se auditan como request_rejected, con su motivo.
 REJECTED = {413: "body_too_large", 422: "invalid_input"}
@@ -93,10 +94,18 @@ class Observability:
         """
         clock = SystemClock()
         config = settings.observability
+        metrics = Metrics(config.slo_p95_ms)
+        logger = EventLogger(
+            config.service_name,
+            clock,
+            environment=settings.security.environment,
+            version=api_docs.VERSION,
+            observer=metrics.observe,
+        )
         return cls(
             clock=clock,
-            logger=EventLogger(config.service_name, clock),
-            metrics=Metrics(config.slo_p95_ms),
+            logger=logger,
+            metrics=metrics,
             tracer=Tracer.from_settings(settings),
         )
 
@@ -141,6 +150,9 @@ class AskService:
         self._models = dict(models)
         self._directory = directory
         self._observability = observability
+        self._traced_answer = traced(
+            "chain", "ask", self._answer, tags=["hr-assistant"]
+        )
 
     def answer(
         self, question: str, history: list[dict], request_id: str, client: str
@@ -169,6 +181,20 @@ class AskService:
         :raises app.sanitize.BlockedRequest: Si la pregunta o el historial traen una
             inyección o un secreto
         """
+        environment = self._settings.security.environment
+        token = CURRENT_REQUEST_ID.set(request_id)
+        try:
+            with self._observability.tracer.request(
+                request_id, client=client, environment=environment
+            ):
+                return self._traced_answer(question, history, request_id, client)
+        finally:
+            CURRENT_REQUEST_ID.reset(token)
+
+    def _answer(
+        self, question: str, history: list[dict], request_id: str, client: str
+    ) -> AskResponse:
+        """Cuerpo de :meth:`answer`, dentro de la traza raíz ``ask``."""
         question, history = self._screen(question, history, request_id, client)
         decision = self._router.choose(question)
         sent = apply_window(history, self._settings.routing.history_window)
@@ -196,6 +222,16 @@ class AskService:
             cost_usd=response.cost_usd,
             model_retries=result.usage.retries,
         )
+        annotate(
+            model=decision.model,
+            route=decision.route,
+            fallback=decision.route.endswith("+fallback"),
+            steps=result.steps,
+            stopped=result.stopped,
+            cached_calls=response.cached_calls,
+            cost_usd=response.cost_usd,
+            model_retries=result.usage.retries,
+        )
         metrics = self._observability.metrics
         metrics.add_tokens(result.input_tokens, result.output_tokens)
         metrics.add_cost(result.usage.cost_usd)
@@ -206,19 +242,25 @@ class AskService:
     ) -> AgentResult:
         """Corre el agente con el modelo de la decisión, en el contexto de traza."""
         on_tool_call, on_invalid_reply = self._auditors(request_id, client)
+        provider = self._settings.models.provider
+        if provider == "gateway":
+            provider = "cloudflare-workers-ai"
         agent = Agent(
             self._models[decision.model],
             self._directory,
             self._settings.agent_max_steps,
+            model_metadata={
+                "ls_model_name": decision.model,
+                "ls_provider": provider,
+                "route": decision.route,
+            },
         )
-        metadata = {"client": client, "model": decision.model, "route": decision.route}
-        with self._observability.tracer.request(request_id, **metadata):
-            return agent.run(
-                question,
-                sent,
-                on_tool_call=on_tool_call,
-                on_invalid_reply=on_invalid_reply,
-            )
+        return agent.run(
+            question,
+            sent,
+            on_tool_call=on_tool_call,
+            on_invalid_reply=on_invalid_reply,
+        )
 
     def _run_with_fallback(
         self, decision, question: str, sent: list[dict], request_id: str, client: str
@@ -666,17 +708,10 @@ def _add_blocked_handler(app: FastAPI) -> None:
         return JSONResponse(status_code=400, content={"detail": error.DETAIL})
 
 
-def _add_routes(
-    app: FastAPI,
-    settings: Settings,
-    service: AskService,
-    metrics: Metrics,
-    access: Access,
-) -> None:
-    """Rutas de la API: página y salud sin clave; métricas y preguntas con clave."""
-    require_client, limit_rate = access.require_client, access.limit_rate
-    ask_request = build_ask_request(settings)
+def _add_pages(app: FastAPI) -> None:
+    """Las dos páginas propias, sin clave: la de RH y el tablero de operación."""
     page = PAGE.read_text(encoding="utf-8")
+    dashboard = DASHBOARD.read_text(encoding="utf-8")
 
     @app.get(
         "/",
@@ -689,6 +724,31 @@ def _add_routes(
         """Sirve la página web del personal de RH."""
         return page
 
+    @app.get(
+        "/dashboard",
+        response_class=HTMLResponse,
+        tags=["operations"],
+        summary="Operations dashboard",
+        description=(
+            "Page with the metrics of this process (it reads `GET /metrics` with the "
+            "key of a client, kept only in `sessionStorage`). The page has no data."
+        ),
+    )
+    def operations_dashboard() -> str:
+        """Sirve el tablero de operación (ADR 0021)."""
+        return dashboard
+
+
+def _add_routes(
+    app: FastAPI,
+    settings: Settings,
+    service: AskService,
+    metrics: Metrics,
+    access: Access,
+) -> None:
+    """Rutas de la API: página y salud sin clave; métricas y preguntas con clave."""
+    require_client, limit_rate = access.require_client, access.limit_rate
+    ask_request = build_ask_request(settings)
     @app.get(
         "/health",
         response_model=HealthResponse,
@@ -751,6 +811,35 @@ def _add_routes(
         return response
 
 
+def _enforce_compliance(
+    settings: Settings, observability: Observability | None
+) -> None:
+    """Aplica las reglas de producción; si fallan, audita ``startup_refused``.
+
+    :param settings: Configuración validada
+    :type settings: app.config.Settings
+    :param observability: Log a usar; si es ``None``, uno a la salida estándar
+    :type observability: Observability | None
+    :raises app.config.ConfigError: Si producción no cumple sus reglas
+    """
+    try:
+        compliance.enforce(settings)
+    except ConfigError:
+        logger = (
+            observability.logger
+            if observability is not None
+            else EventLogger(settings.observability.service_name, SystemClock())
+        )
+        logger.emit(
+            "audit",
+            None,
+            action="startup_refused",
+            environment=settings.security.environment,
+            violations=compliance.violations(settings),
+        )
+        raise
+
+
 def create_app(
     settings: Settings | None = None,
     model: ChatModel | None = None,
@@ -781,22 +870,7 @@ def create_app(
     """
     if settings is None:
         settings = load_settings()
-    try:
-        compliance.enforce(settings)
-    except ConfigError:
-        logger = (
-            observability.logger
-            if observability is not None
-            else EventLogger(settings.observability.service_name, SystemClock())
-        )
-        logger.emit(
-            "audit",
-            None,
-            action="startup_refused",
-            environment=settings.security.environment,
-            violations=compliance.violations(settings),
-        )
-        raise
+    _enforce_compliance(settings, observability)
     if directory is None:
         directory = EmployeeDirectory.load(settings.employees_path)
     if observability is None:
@@ -832,10 +906,17 @@ def create_app(
     _add_observability(app, observability)
     _add_blocked_handler(app)
     access = _access_dependencies(settings, observability)
+    _add_pages(app)
     _add_routes(app, settings, service, observability.metrics, access)
     # Al final, para quedar por fuera de todo: también los errores llevan cabeceras.
-    production = settings.security.environment == "production"
-    add_security_headers(app, PAGE.read_text(encoding="utf-8"), production)
+    add_security_headers(
+        app,
+        {
+            "/": PAGE.read_text(encoding="utf-8"),
+            "/dashboard": DASHBOARD.read_text(encoding="utf-8"),
+        },
+        production=settings.security.environment == "production",
+    )
     return app
 
 

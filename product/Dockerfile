@@ -35,7 +35,8 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 request.urlopen('http://127.0.0.1:${PORT:-8000}/health', timeout=4)"
 
 # sh -c expande ${PORT:-8000} (Render lo define); exec deja a uvicorn como proceso
-# principal para que reciba la señal de apagado. --no-access-log: el log de la
-# plataforma queda solo con las líneas JSON del producto.
+# principal para que reciba la señal de apagado. --no-access-log y --log-level warning:
+# el log de la plataforma queda solo con las líneas JSON del producto (sin el acceso ni
+# las líneas de arranque de uvicorn; sus advertencias y errores siguen saliendo).
 CMD ["sh", "-c", \
-     "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --no-access-log --no-server-header"]
+     "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --no-access-log --no-server-header --log-level warning"]

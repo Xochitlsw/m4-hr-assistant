@@ -79,7 +79,7 @@ validados, un tope de pasos y una salida limpia y redactada.
 | Cliente de la API (`API_KEYS`) | `POST /ask` y `GET /metrics` | Pasar de su límite por minuto ni de su presupuesto diario; escribir datos | `app/main.py`, `app/security.py` |
 | Agente (el modelo) | Llamar `get_employee` y `search_by_department` con argumentos validados, hasta `AGENT_MAX_STEPS` veces | Escribir, ejecutar código, salir a la red, usar otra herramienta | `app/agent.py` |
 | Proceso de la aplicación | Leer su código y sus datos; leer sus secretos del entorno | Modificar su código o sus datos (son de root); iniciar sesión (usuario sin shell) | `Dockerfile`; trabajo `docker` (usuario `10001`, `touch` falla en `/app/app` y `/app/data`) |
-| Token de Cloudflare (`CF_API_TOKEN`) | Correr modelos de Workers AI a través del AI Gateway de la cuenta | Administrar la cuenta u otros productos: se crea con el permiso mínimo de Workers AI | Cloudflare (lo crea la persona) |
+| Token de Cloudflare (`CF_API_TOKEN`) | Correr modelos de Workers AI a través del AI Gateway de la cuenta | Administrar la cuenta u otros productos: se crea con el permiso mínimo de Workers AI | Cloudflare (lo crea la persona). El gateway no tiene autenticación propia («Authenticated Gateway» apagado, ADR 0008): cada llamada sigue exigiendo este token, y la caché del gateway está apagada para que ninguna respuesta se sirva sin él |
 | Clave de LangSmith (`LANGSMITH_API_KEY`) | Crear trazas y proyectos (tipo *Tracing Only*, prefijo `lsv2_tr_`) | Leer trazas, borrar o administrar | LangSmith (la crea la persona) |
 | `GITHUB_TOKEN` de Actions | Leer el repositorio; `security` además lee los pull requests | Escribir código, publicar, cambiar configuración | `.github/workflows/ci.yml` (`permissions`) |
 | Render | Desplegar cuando todos los trabajos del CI pasan; leer los secretos de Environment | Desplegar con el CI en rojo; guardar secretos en el repositorio | `render.yaml` (`checksPass`, `sync: false`) |
@@ -140,3 +140,7 @@ soporte» de la página) en el log; para seguir un origen sospechoso dentro de u
 - Un clasificador de inyección con modelo y la detección de entidades con Presidio: mejoras con costo y latencia.
 - Las claves de `API_KEYS` se guardan en claro en el entorno de Render; guardar solo su hash sería una mejora.
 - Protección contra DDoS volumétrico: le corresponde a la plataforma (Render) y no a la aplicación.
+- Las reglas de la fábrica sobre secretos (el hook que impide leer `.env`) revisan el texto del comando o la ruta
+  pedida. Una lectura indirecta, como una búsqueda recursiva sobre una carpeta que contiene `.env`, no la
+  detectan. La regla práctica es buscar solo en archivos versionados; la protección de fondo es que `.env` nunca
+  entra a git y que las claves se rotan si quedan expuestas.

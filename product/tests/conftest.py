@@ -108,11 +108,17 @@ def make_client(log_stream):
     def build(model=None, tracer=None, http_client=None, **env: str) -> TestClient:
         settings = load_settings({**ACCESS_ENV, **env})
         clock = FixedClock()
+        metrics = Metrics(settings.observability.slo_p95_ms)
+        logger = EventLogger(
+            settings.observability.service_name,
+            clock,
+            log_stream,
+            environment=settings.security.environment,
+            version="1.1.0",
+            observer=metrics.observe,
+        )
         observability = Observability(
-            clock=clock,
-            logger=EventLogger(settings.observability.service_name, clock, log_stream),
-            metrics=Metrics(settings.observability.slo_p95_ms),
-            tracer=tracer or Tracer(),
+            clock=clock, logger=logger, metrics=metrics, tracer=tracer or Tracer()
         )
         app = create_app(
             settings=settings,

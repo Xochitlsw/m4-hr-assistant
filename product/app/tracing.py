@@ -12,9 +12,10 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
-from langsmith import Client, traceable, tracing_context
+from langsmith import Client, get_current_run_tree, traceable, tracing_context
 
 from app.config import Settings
+from app.llm import Completion
 from app.privacy import redact_tree
 
 
@@ -81,7 +82,7 @@ class Tracer:
 
 
 def traced(
-    run_type: str, name: str, function: Callable[..., Any]
+    run_type: str, name: str, function: Callable[..., Any], **options: Any
 ) -> Callable[..., Any]:
     """Envuelve una función para que quede como traza si el contexto lo permite.
 
@@ -91,7 +92,46 @@ def traced(
     :type name: str
     :param function: Función a envolver
     :type function: Callable[..., Any]
+    :param options: ``metadata``, ``tags`` o ``process_outputs`` de ``traceable``
+    :type options: Any
     :return: La función envuelta; sin trazas encendidas se comporta igual
     :rtype: Callable[..., Any]
     """
-    return traceable(run_type=run_type, name=name)(function)
+    return traceable(run_type=run_type, name=name, **options)(function)
+
+
+def annotate(**metadata: Any) -> None:
+    """Agrega metadatos a la traza en curso; sin traza, no hace nada.
+
+    Sirve para lo que se sabe al final (modelo, ruta, costo), que no estaba al abrir la
+    traza.
+
+    :param metadata: Metadatos a agregar
+    :type metadata: Any
+    """
+    run = get_current_run_tree()
+    if run is not None:
+        run.add_metadata(metadata)
+
+
+def completion_outputs(completion: Completion) -> dict:
+    """Salida de una llamada al modelo para LangSmith, con ``usage_metadata``.
+
+    LangSmith toma ``usage_metadata`` para mostrar tokens y costo de la llamada.
+
+    :param completion: Respuesta del modelo
+    :type completion: app.llm.Completion
+    :return: Texto, uso de tokens, caché, costo e intentos
+    :rtype: dict
+    """
+    return {
+        "text": completion.text,
+        "usage_metadata": {
+            "input_tokens": completion.input_tokens,
+            "output_tokens": completion.output_tokens,
+            "total_tokens": completion.input_tokens + completion.output_tokens,
+        },
+        "cached": completion.cached,
+        "cost_usd": completion.cost_usd,
+        "attempts": completion.attempts,
+    }

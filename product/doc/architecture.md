@@ -37,6 +37,7 @@ Decisiones:
 - [ADR 0019](adr/0019-concurrency-readiness-api-contract-and-environments.md): concurrencia, readiness, contrato
   de la API y entornos.
 - [ADR 0020](adr/0020-two-layer-multi-agent-system.md): el sistema multi-agente en dos capas.
+- [ADR 0021](adr/0021-observability-in-production.md): observabilidad en producción.
 
 ## El sistema en dos capas
 
@@ -100,12 +101,13 @@ flowchart LR
 | `app/gateway.py` | Workers AI vía AI Gateway: petición, tope de salida, caché, `usage`, adaptador al protocolo y `ModelUnavailable` (transitoria o no, con `Retry-After`); timeout de conexión aparte |
 | `app/resilience.py` | `Retrier` (reintentos con backoff, jitter, `Retry-After` y plazo), `CircuitBreaker` y `ResilientModel`; `ModelCircuitOpen` (`503`) |
 | `app/api_docs.py` | Contrato OpenAPI: descripción, etiquetas y errores documentados de cada ruta |
+| `app/static/dashboard.html` | Tablero de operación: lee `/metrics` con la clave de `sessionStorage` y pinta con `textContent` |
 | `app/pricing.py` | Precios por modelo y `PricedModel` |
 | `app/directory.py` | Carga y consulta de solo lectura de los empleados |
 | `app/config.py` | Configuración desde el entorno por grupos, con valores por omisión y validación al arrancar |
 | `app/clock.py` | Reloj inyectable: hora UTC y tiempo monótono para latencias y el límite |
-| `app/logs.py` | Una línea JSON por evento, con candado entre hilos |
-| `app/metrics.py` | Contadores del proceso, percentiles, tokens, costo y SLO, con candado entre hilos |
+| `app/logs.py` | Una línea JSON por evento con nivel, entorno y versión, con candado entre hilos; un observador (las métricas) recibe cada registro |
+| `app/metrics.py` | Contadores del proceso, percentiles (p50, p95, p99), tokens, costo y SLO, y desgloses por código, modelo, ruta y cliente, seguridad y negocio que salen del log; con candado entre hilos |
 | `app/tracing.py` | Enciende o apaga LangSmith, oculta o redacta entradas y salidas, y envuelve corrida, modelo y herramientas |
 | `app/static/index.html` | Página única; clave en `sessionStorage`; historial en el navegador; pinta con `textContent`; «Id de soporte» |
 
@@ -196,16 +198,18 @@ El límite por cliente (ADR 0010) también acota el gasto.
 
 ## Observabilidad
 
+Runbook completo en [`observability.md`](observability.md) (ADR 0021).
+
 | Pregunta | Dónde se contesta |
 | --- | --- |
-| ¿Qué pasó con la petición X? | Log: `grep` del `request_id` (el «Id de soporte» de la página) → `audit`, `agent_run`, `request`, `error` |
-| ¿Quién preguntó? | Campo `client` en `request`, `agent_run`, `audit` y en los metadatos de la traza |
-| ¿Quién intentó entrar sin permiso o abusó? | `audit` con `auth_failed` y `rate_limited` |
-| ¿Qué herramientas usó el agente y con qué argumentos? | `audit` con `tool_call` |
-| ¿Qué modelo atendió la pregunta, por qué y cuánto costó? | Respuesta de `/ask` y evento `agent_run` |
-| ¿Está lento o fallando este proceso? | `GET /metrics` (con clave): `requests`, `error_rate`, p50/p95, `slo.met` |
-| ¿Cuánto se ha gastado? | `GET /metrics`: `tokens` y `cost_usd` acumulados |
-| ¿Cómo razonó el agente paso a paso? | LangSmith (si está encendido), por los metadatos `request_id`, `client`, `model` y `route` |
+| ¿Qué pasó con la petición X? | Por su `request_id` (el «Id de soporte»): log (`audit`, `agent_run`, `request`, `error`), traza `ask` en LangSmith y registros del AI Gateway (`cf-aig-metadata`) |
+| ¿Quién preguntó? | Campo `client` en el log, en `/metrics` (`by_client`) y en los metadatos de la traza |
+| ¿Quién intentó entrar sin permiso o abusó? | `audit` con nivel `warning` (`auth_failed`, `auth_throttled`, `rate_limited`, `injection_blocked`, ...) y `/metrics` (`security`) |
+| ¿Qué herramientas usó el agente y con qué argumentos? | `audit` con `tool_call`; `/metrics` (`business.tools`) |
+| ¿Qué modelo atendió la pregunta, por qué y cuánto costó? | Respuesta de `/ask`, `agent_run` y metadatos de `ask`; `/metrics` (`by_model`, `by_route`) |
+| ¿Está lento o fallando este proceso? | `/metrics` y `/dashboard`: `error_rate`, p50/p95/p99, `slo.met`, `errors_by_type`; `/ready` y `model_circuit` |
+| ¿Cuánto se ha gastado? | `/metrics`: `cost_usd`, `cost_per_answer_usd`, `by_model`, `by_client` |
+| ¿Cómo razonó el agente paso a paso? | LangSmith: árbol `ask` → `agent_run` → `model` / herramientas, redactado, con tokens por llamada |
 
 ## Configuración
 

@@ -163,6 +163,7 @@ def test_the_image_installs_only_the_runtime_lock_and_runs_unprivileged():
     assert "--require-hashes" in dockerfile and "--no-deps" in dockerfile
     assert "requirements-dev" not in dockerfile
     assert "USER app" in dockerfile and "HEALTHCHECK" in dockerfile
+    assert "--no-access-log" in dockerfile and "--log-level warning" in dockerfile
     assert PINNED_BASE.search(dockerfile)
     ignored = (PRODUCT / ".dockerignore").read_text(encoding="utf-8").splitlines()
     excluded = {".env", "tests/", "requirements-dev.txt", "requirements*.in"}

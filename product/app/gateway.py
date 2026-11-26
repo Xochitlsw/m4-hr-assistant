@@ -9,6 +9,7 @@ token nunca aparece en los mensajes de error.
 
 import json
 import re
+from contextvars import ContextVar
 
 import httpx
 
@@ -18,6 +19,10 @@ from app.llm import Completion
 GATEWAY_BASE_URL = "https://gateway.ai.cloudflare.com/v1"
 CACHE_TTL_HEADER = "cf-aig-cache-ttl"
 CACHE_STATUS_HEADER = "cf-aig-cache-status"
+METADATA_HEADER = "cf-aig-metadata"
+# Id de la petición en curso; AskService lo fija y el gateway lo manda en los metadatos
+# del AI Gateway, para buscar la llamada en sus registros por el mismo request_id.
+CURRENT_REQUEST_ID: ContextVar[str | None] = ContextVar("request_id", default=None)
 FENCED_BLOCK = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
 
@@ -138,11 +143,14 @@ class GatewayModel:
         self._url = gateway_url(settings)
 
     def _headers(self) -> dict:
-        """Autorización y, si la caché está encendida, su TTL (palanca 4)."""
+        """Autorización, TTL de la caché (palanca 4) y el ``request_id`` en curso."""
         gateway = self._settings.gateway
         headers = {"Authorization": f"Bearer {gateway.api_token}"}
         if gateway.cache_ttl_seconds > 0:
             headers[CACHE_TTL_HEADER] = str(gateway.cache_ttl_seconds)
+        request_id = CURRENT_REQUEST_ID.get()
+        if request_id is not None:
+            headers[METADATA_HEADER] = json.dumps({"request_id": request_id})
         return headers
 
     def complete(self, messages: list[dict]) -> Completion:
