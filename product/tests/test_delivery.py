@@ -9,6 +9,9 @@ from pathlib import Path
 
 import yaml
 
+from app import compliance
+from app.config import load_settings
+
 PRODUCT = Path(__file__).resolve().parents[1]
 ROOT = PRODUCT.parent
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
@@ -27,6 +30,20 @@ DEV_ONLY = {
     "pyyaml",
 }
 PRODUCT_STAGES = ("style", "unit", "e2e", "docker")
+# Palancas de costo de producción (ADR 0022): explícitas en el Blueprint.
+COST_LEVERS = {
+    "ROUTING": "true",
+    "HISTORY_WINDOW": "6",
+    "MODEL_MAX_TOKENS": "300",
+    "CACHE_TTL_SECONDS": "300",
+    "CLIENT_DAILY_BUDGET_USD": "1.0",
+}
+# Valores de prueba para los secretos, que en Render se escriben a mano.
+TEST_SECRETS = {
+    "API_KEYS": "portal:portal-key-0123456789",
+    "CF_ACCOUNT_ID": "test-account",
+    "CF_API_TOKEN": "test-only-token",
+}
 FACTORY_STEPS = ("unit", "contract", "qa", "e2e", "evaluate")
 PINNED_ACTION = re.compile(r"uses:\s+[\w.-]+/[\w.-]+@[0-9a-f]{40}\s+#\s+v\d+\.\d+\.\d+")
 PINNED_BASE = re.compile(r"^FROM python:3\.12-slim@sha256:[0-9a-f]{64}$", re.MULTILINE)
@@ -131,6 +148,19 @@ def test_the_blueprint_builds_the_product_folder_safely():
         assert variables[secret] == {"key": secret, "sync": False}
     assert variables["ENVIRONMENT"]["value"] == "production"
     assert variables["HIDE_INPUTS"]["value"] == "redact"
+
+
+def test_production_keeps_every_cost_lever_on_and_passes_compliance():
+    [service] = yaml.safe_load(BLUEPRINT.read_text(encoding="utf-8"))["services"]
+    values = {
+        item["key"]: item["value"] for item in service["envVars"] if "value" in item
+    }
+    assert {key: values[key] for key in COST_LEVERS} == COST_LEVERS
+    settings = load_settings({**values, **TEST_SECRETS})
+    assert settings.routing.enabled and settings.routing.history_window == 6
+    assert settings.models.max_tokens == 300
+    assert settings.models.gateway.cache_ttl_seconds == 300
+    assert not compliance.violations(settings)
 
 
 def test_development_and_production_trace_to_different_projects():

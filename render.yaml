@@ -20,6 +20,20 @@ services:
         value: production
       - key: MODEL_PROVIDER
         value: gateway
+      # Palancas de costo activas (ADR 0007, 0008 y 0022). Son los valores por omisión
+      # del producto, escritos aquí para que producción no dependa de ellos: enrutamiento
+      # por regla, ventana de 6 mensajes, tope de salida y presupuesto diario por
+      # cliente. La caché del gateway guarda 5 minutos (compliance: 15 como máximo).
+      - key: ROUTING
+        value: "true"
+      - key: HISTORY_WINDOW
+        value: "6"
+      - key: MODEL_MAX_TOKENS
+        value: "300"
+      - key: CACHE_TTL_SECONDS
+        value: "300"
+      - key: CLIENT_DAILY_BUDGET_USD
+        value: "1.0"
       # Un proxy de Render delante de la app: el origen es el último valor de
       # X-Forwarded-For (ADR 0017).
       - key: TRUSTED_PROXY_HOPS

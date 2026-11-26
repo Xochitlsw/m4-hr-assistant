@@ -1,0 +1,12 @@
+# Trazas reales en LangSmith, equipo local (2026-11-26 19:33 UTC)
+# Proyecto: m4-hr-assistant-dev · modelo: fake
+# Privacidad de las trazas: entradas redact, salidas redact
+# Para cada fila: LangSmith > proyecto > Runs > filtro Metadata
+# request_id = <id>.
+# La traza raíz es «ask»; debajo, agent_run → model → herramienta → model.
+
+caso | código | request_id | modelo | ruta | costo USD | herramientas
+simple | 200 | 1b6e8e2a-2129-4fcb-a0f8-c8b40f1832e5 | @cf/meta/llama-3.1-8b-instruct-fast | simple | 1.455e-05 | get_employee
+complex | 200 | 327fe95b-2f1e-4af9-95d5-be823cc78b7c | @cf/meta/llama-3.3-70b-instruct-fp8-fast | keyword:compara | 0.00016208 | search_by_department
+personal_data | 200 | 309e935c-72b6-4e2f-897d-4eef5853aade | @cf/meta/llama-3.1-8b-instruct-fast | simple | 1.448e-05 | get_employee
+injection | 400 | db92d3f2-dbe4-4e0e-9212-a2626794d170 | - | - | 0.0 | -

@@ -22,7 +22,9 @@ Arquitectura y decisiones: [`doc/architecture.md`](doc/architecture.md), [`doc/a
     pip-audit. Para desarrollar: `uv pip install --require-hashes -r requirements-dev.txt`.
   - Para cambiar una versión, edita `requirements.in` o `requirements-dev.in` y regenera el lock con el comando
     de su encabezado (`uv pip compile ... --generate-hashes`).
-- Para el modelo real: una cuenta de Cloudflare con Workers AI y un AI Gateway (por omisión, `default`).
+- Para el modelo real: una cuenta de Cloudflare con Workers AI y un AI Gateway (por omisión, `default`), y un
+  token con **solo** estos permisos: **Workers AI: Read y Edit** y **AI Gateway: Run**. El gateway exige su propia
+  autenticación: el producto manda el mismo token en `Authorization` y en `cf-aig-authorization` (ADR 0008).
 - Para publicar: una cuenta de GitHub y otra de Render. Docker es opcional: el CI construye la imagen.
 
 ## Cómo correrlo
@@ -136,7 +138,7 @@ un UUID.
 - **Compliance como código**: con `ENVIRONMENT=production` el producto **no arranca** si `MODEL_PROVIDER=fake`, si
   `API_KEYS` está vacía o tiene una clave de menos de 16 caracteres, si `LANGSMITH_TRACING=true` con `HIDE_INPUTS`
   o `HIDE_OUTPUTS` en `false`, o si se pasan los topes de producción (`MAX_BODY_BYTES` 1 MiB,
-  `MAX_HISTORY_MESSAGES` 50, `AGENT_MAX_STEPS` 5, `MODEL_MAX_TOKENS` 1024). Detalle en
+  `MAX_HISTORY_MESSAGES` 50, `AGENT_MAX_STEPS` 5, `MODEL_MAX_TOKENS` 1024, `CACHE_TTL_SECONDS` 900). Detalle en
   [`doc/compliance-checklist.md`](doc/compliance-checklist.md).
 - **Página**: la clave vive en `sessionStorage` y viaja en `X-API-Key`; con `401` muestra «Clave inválida» y con
   `429` «Demasiadas preguntas; espera N segundos».
@@ -152,7 +154,17 @@ un UUID.
 | 1. Enrutamiento | Regla en código: el modelo grande si `ROUTING=false`, si la pregunta pasa de `ROUTER_MAX_CHARS` caracteres o si contiene «compara», «resume», «explica», «por qué», «analiza» o «todos» (sin importar mayúsculas ni acentos); el pequeño en otro caso | `ROUTING`, `ROUTER_MAX_CHARS`, `MODEL_SMALL`, `MODEL_LARGE` |
 | 2. Ventana | Al modelo solo llegan los últimos N mensajes del historial | `HISTORY_WINDOW` |
 | 3. Tope de salida | `max_tokens` en cada llamada al modelo real | `MODEL_MAX_TOKENS` |
-| 4. Caché | Se manda `cf-aig-cache-ttl`; si el gateway responde `cf-aig-cache-status: HIT`, la llamada no cuesta | `CACHE_TTL_SECONDS` |
+| 4. Caché | Con TTL > 0 se mandan `cf-aig-cache-ttl` y `cf-aig-cache-key` (hash del cuerpo, sin el `request_id`); con 0, `cf-aig-skip-cache`. Si el gateway responde `cf-aig-cache-status: HIT`, la llamada no cuesta | `CACHE_TTL_SECONDS` |
+
+En producción (`render.yaml`, ADR 0022) están activas las cuatro: `ROUTING=true`, `HISTORY_WINDOW=6`,
+`MODEL_MAX_TOKENS=300` y `CACHE_TTL_SECONDS=300`, más el presupuesto diario por cliente. Con el modelo simulado,
+la configuración de producción cuesta 86.2 % menos que la línea base con la misma calidad. Ablación por palanca,
+proyección mensual, trade-offs y la muestra con el modelo real: [`doc/cost-analysis.md`](doc/cost-analysis.md).
+
+```powershell
+uv run python scripts/cost_ablation.py                        # ablación, sin red
+uv run --env-file .env python scripts/cost_real_sample.py     # muestra con el modelo real
+```
 
 `route` dice por qué se eligió el modelo: `routing_off`, `long_question`, `keyword:<palabra>` o `simple`.
 `cost_usd` se calcula por llamada con los precios de `data/model_prices.json` (USD por millón de tokens, copia de
@@ -202,7 +214,7 @@ Todas están en [`.env.example`](.env.example), con los secretos vacíos.
 | `CIRCUIT_FAILURE_THRESHOLD` | `5` | Llamadas fallidas seguidas que abren el circuito de un modelo (entero >= 1) |
 | `CIRCUIT_OPEN_SECONDS` | `30` | Tiempo con el circuito abierto antes de la llamada de prueba (número > 0) |
 | `WEB_CONCURRENCY` | `1` | Procesos de uvicorn; cada uno con sus métricas, límites y circuitos (ADR 0019) |
-| `CACHE_TTL_SECONDS` | `0` | Caché del gateway en segundos (0: apagada) |
+| `CACHE_TTL_SECONDS` | `0` | Caché del gateway en segundos (0: se salta); producción usa `300` y no acepta más de `900` |
 | `PRICES_PATH` | `data/model_prices.json` | Precios por modelo; una ruta relativa se toma desde `product/` |
 | `PORT` | `8000` | Puerto del contenedor (Render lo define) |
 | `SMOKE_API_KEY` | (sin valor) | Clave de un cliente para la prueba de humo (`scripts/smoke.py` y la verificación `production`); la aplicación no la lee. **Secreto**: léela sin eco (ver «Despliegue») |

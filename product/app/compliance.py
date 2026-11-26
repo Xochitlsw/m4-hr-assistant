@@ -9,12 +9,18 @@ variables, nunca una clave.
 from app.config import ConfigError, Settings
 
 MIN_KEY_LENGTH = 16
-# Producción no puede quitar los topes de entrada, agencia y consumo (ADR 0016).
+# Producción no puede quitar los topes de entrada, agencia y consumo (ADR 0016), ni
+# guardar respuestas en la caché del gateway más de 15 minutos (ADR 0022).
 CEILINGS = (
     ("MAX_BODY_BYTES", 1_048_576, lambda settings: settings.limits.body_bytes),
     ("MAX_HISTORY_MESSAGES", 50, lambda settings: settings.limits.history_messages),
     ("AGENT_MAX_STEPS", 5, lambda settings: settings.agent_max_steps),
     ("MODEL_MAX_TOKENS", 1024, lambda settings: settings.models.max_tokens),
+    (
+        "CACHE_TTL_SECONDS",
+        900,
+        lambda settings: settings.models.gateway.cache_ttl_seconds,
+    ),
 )
 
 

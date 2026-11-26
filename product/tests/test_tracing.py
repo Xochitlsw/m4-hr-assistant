@@ -12,6 +12,7 @@ from app.config import load_settings
 from app.llm import Completion
 from app.privacy import redact_tree
 from app.tracing import Tracer
+from tests.conftest import GATEWAY_ENV, FakeGateway
 
 TRACING_ON = {"LANGSMITH_TRACING": "true", "LANGSMITH_API_KEY": "test-only-key"}
 REDACTED_TRACES = {**TRACING_ON, "HIDE_INPUTS": "redact", "HIDE_OUTPUTS": "redact"}
@@ -172,3 +173,18 @@ def test_each_question_is_one_tree_with_useful_metadata(make_client):
     assert llm["ls_model_name"] == "@cf/meta/llama-3.1-8b-instruct-fast"
     assert llm["ls_provider"] == "fake"
     assert llm["usage_metadata"]["total_tokens"] > 0
+
+
+def test_the_gateway_token_never_reaches_the_traces_or_the_log(make_client, log_stream):
+    """El token viaja en dos cabeceras al gateway, pero nunca a LangSmith ni al log."""
+    recorder = Recorder()
+    tracer = Tracer.from_settings(load_settings(REDACTED_TRACES), recorder.client)
+    gateway = FakeGateway()
+    api = make_client(tracer=tracer, http_client=gateway.client(), **GATEWAY_ENV)
+    assert api.post("/ask", json={"question": "¿Quién es EMP-0004?"}).status_code == 200
+    assert all(
+        request.headers["cf-aig-authorization"] == "Bearer test-only-token"
+        for request in gateway.requests
+    )
+    assert "test-only-token" not in json.dumps(recorder.bodies)
+    assert "test-only-token" not in log_stream.getvalue()

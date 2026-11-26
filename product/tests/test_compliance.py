@@ -32,6 +32,7 @@ def test_production_refuses_unsafe_settings():
         "MAX_HISTORY_MESSAGES must be at most 50": {"MAX_HISTORY_MESSAGES": "51"},
         "AGENT_MAX_STEPS must be at most 5": {"AGENT_MAX_STEPS": "6"},
         "MODEL_MAX_TOKENS must be at most 1024": {"MODEL_MAX_TOKENS": "4096"},
+        "CACHE_TTL_SECONDS must be at most 900": {"CACHE_TTL_SECONDS": "3600"},
         "must be true (hide) or redact, never false": {
             "LANGSMITH_TRACING": "true",
             "HIDE_INPUTS": "redact",

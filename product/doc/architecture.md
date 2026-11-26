@@ -38,6 +38,8 @@ Decisiones:
   de la API y entornos.
 - [ADR 0020](adr/0020-two-layer-multi-agent-system.md): el sistema multi-agente en dos capas.
 - [ADR 0021](adr/0021-observability-in-production.md): observabilidad en producción.
+- [ADR 0022](adr/0022-cost-levers-in-production-and-gateway-cache.md): palancas de costo en producción, caché
+  del gateway y ablación.
 
 ## El sistema en dos capas
 
@@ -189,12 +191,13 @@ El CI y el Blueprint viven en la raíz del repositorio, donde GitHub y Render lo
 | 1. Enrutamiento | Regla en código: grande si `ROUTING=false`, pregunta larga o palabra clave; si no, pequeño | `ROUTING`, `ROUTER_MAX_CHARS`, `MODEL_SMALL`, `MODEL_LARGE` |
 | 2. Ventana | Solo los últimos N mensajes del historial llegan al modelo | `HISTORY_WINDOW` |
 | 3. Tope de salida | `max_tokens` en cada llamada al modelo real | `MODEL_MAX_TOKENS` |
-| 4. Caché | `cf-aig-cache-ttl`; un `HIT` del gateway cuesta 0 | `CACHE_TTL_SECONDS` |
+| 4. Caché | `cf-aig-cache-ttl` y `cf-aig-cache-key` (hash del cuerpo); con 0, `cf-aig-skip-cache`. Un `HIT` del gateway cuesta 0 | `CACHE_TTL_SECONDS` (`300` en producción) |
 
 `cost_usd` = (tokens de entrada × precio de entrada + tokens de salida × precio de salida) / 1 000 000, por
 llamada y según el nombre del modelo (`data/model_prices.json`). `verification evaluate` compara la línea base
 (`ROUTING=false`, sin ventana) con la configuración por omisión: pasa solo si la calidad no baja y el costo sí baja.
-El límite por cliente (ADR 0010) también acota el gasto.
+El límite por cliente (ADR 0010) y el presupuesto diario (ADR 0017) también acotan el gasto. Valores de
+producción, ablación por palanca y trade-offs: [`doc/cost-analysis.md`](cost-analysis.md) (ADR 0022).
 
 ## Observabilidad
 
@@ -249,7 +252,7 @@ Runbook completo en [`observability.md`](observability.md) (ADR 0021).
 | `MODEL_RETRY_BACKOFF_SECONDS` | `0.5` | Número >= 0 |
 | `CIRCUIT_FAILURE_THRESHOLD` | `5` | Entero >= 1 |
 | `CIRCUIT_OPEN_SECONDS` | `30` | Número > 0 |
-| `CACHE_TTL_SECONDS` | `0` | Entero >= 0; 0 apaga la caché |
+| `CACHE_TTL_SECONDS` | `0` | Entero >= 0; 0 salta la caché; producción `300`, máximo `900` |
 | `PRICES_PATH` | `data/model_prices.json` | Relativa a `product/`; debe tener los dos modelos |
 | `PORT` | `8000` | Puerto del contenedor (Render lo define) |
 

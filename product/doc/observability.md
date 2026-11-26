@@ -119,6 +119,7 @@ línea base.
 | Errores | `error_rate` > 5 % | `/metrics`, dashboard |
 | Modelo | Cualquier `model_circuit` con `state=open`; `/ready` en `503` | Log, `/ready` |
 | Costo | Costo del día > suma de los presupuestos de los clientes; un cliente con `budget_exceeded` | `/metrics` `by_client` |
+| Caché | `cache_hit_rate` en 0 con `CACHE_TTL_SECONDS` > 0 y preguntas repetidas (ADR 0022) | `/metrics`, dashboard |
 | Abuso | `auth_throttled` > 0 o `injection_blocked` creciendo | `/metrics` `security` |
 
 En el plan gratuito no hay un sistema de alertas: los umbrales se revisan en el dashboard y en LangSmith. Un
@@ -138,3 +139,5 @@ Actions el resultado de cada verificación.
 | `scripts/trace_demo.py` | 4 preguntas con LangSmith encendido; ids y log en `doc/evidence/` | `uv run --env-file .env` con las claves de LangSmith (y de Cloudflare sin `--fake`) |
 | `scripts/load_test.py <url>` | Carga concurrente | `SMOKE_API_KEY` |
 | `scripts/security_check.py <url>` | 13 casos de ataque | `SMOKE_API_KEY` |
+| `scripts/cost_ablation.py` | Ablación de las palancas con el modelo simulado; `doc/evidence/cost-ablation.md` | Nada |
+| `scripts/cost_real_sample.py` | Línea base, palancas y caché con el modelo real; `doc/evidence/cost-real-model.md` | `uv run --env-file .env` con las credenciales de Cloudflare |

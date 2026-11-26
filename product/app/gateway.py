@@ -7,6 +7,7 @@ pide esperar el gateway, para que ``app.resilience`` decida si reintenta (ADR 00
 token nunca aparece en los mensajes de error.
 """
 
+import hashlib
 import json
 import re
 from contextvars import ContextVar
@@ -18,8 +19,11 @@ from app.llm import Completion
 
 GATEWAY_BASE_URL = "https://gateway.ai.cloudflare.com/v1"
 CACHE_TTL_HEADER = "cf-aig-cache-ttl"
+CACHE_KEY_HEADER = "cf-aig-cache-key"
+CACHE_SKIP_HEADER = "cf-aig-skip-cache"
 CACHE_STATUS_HEADER = "cf-aig-cache-status"
 METADATA_HEADER = "cf-aig-metadata"
+GATEWAY_AUTH_HEADER = "cf-aig-authorization"
 # Id de la petición en curso; AskService lo fija y el gateway lo manda en los metadatos
 # del AI Gateway, para buscar la llamada en sus registros por el mismo request_id.
 CURRENT_REQUEST_ID: ContextVar[str | None] = ContextVar("request_id", default=None)
@@ -72,6 +76,20 @@ def gateway_url(settings: ModelSettings) -> str:
         f"{GATEWAY_BASE_URL}/{gateway.account_id}/{gateway.gateway_id}"
         "/workers-ai/v1/chat/completions"
     )
+
+
+def cache_key(body: dict) -> str:
+    """Clave de la caché del gateway: SHA-256 del cuerpo en JSON canónico.
+
+    No lleva el token ni el ``request_id``; el texto ya llega redactado (ADR 0013).
+
+    :param body: Cuerpo de la petición al modelo
+    :type body: dict
+    :return: 64 caracteres hexadecimales
+    :rtype: str
+    """
+    canonical = json.dumps(body, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def build_http_client(settings: ModelSettings) -> httpx.Client:
@@ -142,12 +160,30 @@ class GatewayModel:
         self._client = client
         self._url = gateway_url(settings)
 
-    def _headers(self) -> dict:
-        """Autorización, TTL de la caché (palanca 4) y el ``request_id`` en curso."""
+    def _headers(self, body: dict) -> dict:
+        """Autorización, caché del gateway (palanca 4) y el ``request_id`` en curso.
+
+        El token va dos veces: ``Authorization`` para Workers AI y
+        ``cf-aig-authorization`` para el propio gateway, que exige su autenticación
+        (ADR 0008). Ninguna de las dos se registra.
+
+        Con ``CACHE_TTL_SECONDS`` > 0 se manda la TTL y una clave de caché que es el
+        hash del cuerpo (modelo, mensajes y parámetros): dos peticiones iguales
+        comparten la respuesta aunque cada una lleve su ``request_id`` en los
+        metadatos. Con 0, la caché se salta aunque el gateway la tenga encendida en
+        su panel (ADR 0022).
+
+        :param body: Cuerpo de la petición al modelo
+        :type body: dict
+        """
         gateway = self._settings.gateway
-        headers = {"Authorization": f"Bearer {gateway.api_token}"}
+        bearer = f"Bearer {gateway.api_token}"
+        headers = {"Authorization": bearer, GATEWAY_AUTH_HEADER: bearer}
         if gateway.cache_ttl_seconds > 0:
             headers[CACHE_TTL_HEADER] = str(gateway.cache_ttl_seconds)
+            headers[CACHE_KEY_HEADER] = cache_key(body)
+        else:
+            headers[CACHE_SKIP_HEADER] = "true"
         request_id = CURRENT_REQUEST_ID.get()
         if request_id is not None:
             headers[METADATA_HEADER] = json.dumps({"request_id": request_id})
@@ -169,7 +205,9 @@ class GatewayModel:
             "temperature": self._settings.temperature,
         }
         try:
-            response = self._client.post(self._url, json=body, headers=self._headers())
+            response = self._client.post(
+                self._url, json=body, headers=self._headers(body)
+            )
         except httpx.TransportError as error:
             raise ModelUnavailable(
                 f"gateway call failed for {self.name}: {type(error).__name__}",

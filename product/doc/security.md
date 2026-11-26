@@ -79,7 +79,7 @@ validados, un tope de pasos y una salida limpia y redactada.
 | Cliente de la API (`API_KEYS`) | `POST /ask` y `GET /metrics` | Pasar de su límite por minuto ni de su presupuesto diario; escribir datos | `app/main.py`, `app/security.py` |
 | Agente (el modelo) | Llamar `get_employee` y `search_by_department` con argumentos validados, hasta `AGENT_MAX_STEPS` veces | Escribir, ejecutar código, salir a la red, usar otra herramienta | `app/agent.py` |
 | Proceso de la aplicación | Leer su código y sus datos; leer sus secretos del entorno | Modificar su código o sus datos (son de root); iniciar sesión (usuario sin shell) | `Dockerfile`; trabajo `docker` (usuario `10001`, `touch` falla en `/app/app` y `/app/data`) |
-| Token de Cloudflare (`CF_API_TOKEN`) | Correr modelos de Workers AI a través del AI Gateway de la cuenta | Administrar la cuenta u otros productos: se crea con el permiso mínimo de Workers AI | Cloudflare (lo crea la persona). El gateway no tiene autenticación propia («Authenticated Gateway» apagado, ADR 0008): cada llamada sigue exigiendo este token, y la caché del gateway está apagada para que ninguna respuesta se sirva sin él |
+| Token de Cloudflare (`CF_API_TOKEN`) | Correr modelos de Workers AI y hacer inferencia por los gateways de la cuenta (permisos: Workers AI Read y Edit, AI Gateway Run) | Ver o cambiar la configuración de los gateways, leer sus registros, administrar la cuenta u otros productos | Cloudflare (lo crea la persona). El gateway es autenticado (ADR 0008): cada llamada manda el token en `Authorization` y en `cf-aig-authorization`, así que el gateway es una capa más de control además de Workers AI |
 | Clave de LangSmith (`LANGSMITH_API_KEY`) | Crear trazas y proyectos (tipo *Tracing Only*, prefijo `lsv2_tr_`) | Leer trazas, borrar o administrar | LangSmith (la crea la persona) |
 | `GITHUB_TOKEN` de Actions | Leer el repositorio; `security` además lee los pull requests | Escribir código, publicar, cambiar configuración | `.github/workflows/ci.yml` (`permissions`) |
 | Render | Desplegar cuando todos los trabajos del CI pasan; leer los secretos de Environment | Desplegar con el CI en rojo; guardar secretos en el repositorio | `render.yaml` (`checksPass`, `sync: false`) |
@@ -109,7 +109,7 @@ Rotación (también si se sospecha una filtración):
 | Secreto | Pasos |
 | --- | --- |
 | Clave de un cliente (`API_KEYS`) | 1) Genera una clave nueva larga (por ejemplo con `secrets.token_urlsafe(32)` de Python). 2) En Render > Environment agrega un cliente nuevo con esa clave junto al actual (los nombres y las claves no se pueden repetir). 3) Entrega la clave nueva a quien la usa. 4) Quita el cliente viejo y guarda: Render redespliega. 5) En Render Logs, `auth_failed` con motivo `invalid` muestra quién sigue usando la vieja |
-| Token de Cloudflare (`CF_API_TOKEN`) | 1) En Cloudflare crea un token nuevo con el mismo permiso mínimo. 2) Cámbialo en Render > Environment y en tu `.env`. 3) Corre la prueba de humo. 4) Revoca el token viejo en Cloudflare |
+| Token de Cloudflare (`CF_API_TOKEN`) | 1) En Cloudflare crea un token nuevo con los mismos permisos (Workers AI Read y Edit, AI Gateway Run). 2) Cámbialo en Render > Environment y en tu `.env`. 3) Corre la prueba de humo. 4) Revoca el token viejo en Cloudflare |
 | Clave de LangSmith (`LANGSMITH_API_KEY`) | 1) Crea una clave *Tracing Only* nueva. 2) Cámbiala en Render y en `.env`. 3) Comprueba que llegan trazas. 4) Revoca la vieja |
 
 Si un secreto se filtró: **revócalo primero**, aunque el servicio falle unos minutos, y después reemplázalo. Si
