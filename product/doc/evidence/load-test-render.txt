@@ -1,0 +1,4 @@
+﻿Peticiones: 20 con 5 a la vez en 5.072 s (3.9 por segundo)
+Por código: 200: 20
+Errores de red: 0
+Latencia: p50 608.9 ms, p95 3361.9 ms, máxima 3673.3 ms
