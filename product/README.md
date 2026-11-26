@@ -22,16 +22,18 @@ Arquitectura y decisiones: [`doc/architecture.md`](doc/architecture.md), [`doc/a
 
 ## Cómo correrlo
 
-`POST /ask` y `GET /metrics` piden una clave. En local, define un cliente con su clave en `API_KEYS` (la forma es
-`cliente:clave`) y arranca desde esta carpeta (`product/`), con el modelo simulado (sin red ni costo):
+`POST /ask` y `GET /metrics` piden una clave. En local, el cliente y su clave van en `API_KEYS` (la forma es
+`cliente:clave`) dentro de `.env`, **nunca en el comando**: la línea quedaría en el historial de la consola, y
+PowerShell lo guarda en texto plano. Desde esta carpeta (`product/`):
+
+1. Copia la plantilla: `Copy-Item .env.example .env` (PowerShell) o `cp .env.example .env` (Bash). Git ignora
+   `.env` y cualquier `.env.*`, salvo la plantilla.
+2. En tu editor, escribe en `API_KEYS` un cliente llamado `local`, dos puntos y una clave larga que inventes. Nunca
+   subas `.env` ni pegues sus valores en un chat.
+3. Arranca con el modelo simulado (sin red ni costo); el comando es el mismo en PowerShell y en Bash:
 
 ```bash
-API_KEYS="local:<una-clave-larga-que-inventes>" uv run uvicorn app.main:app --no-access-log      # Bash
-```
-
-```powershell
-$env:API_KEYS = "local:<una-clave-larga-que-inventes>"                                              # PowerShell
-uv run uvicorn app.main:app --no-access-log
+uv run --env-file .env uvicorn app.main:app --no-access-log
 ```
 
 `--no-access-log` apaga el log de acceso de uvicorn, que escribe líneas que no son JSON; el evento `request` ya
@@ -43,10 +45,9 @@ ejemplo, «¿Quién es EMP-0004?» o «¿Quiénes trabajan en Finanzas?». Cada 
 
 ### Con el modelo real
 
-1. Copia la plantilla: `cp .env.example .env` (en PowerShell: `Copy-Item .env.example .env`).
-2. En tu editor, pon `MODEL_PROVIDER=gateway`, tu `CF_ACCOUNT_ID`, tu `CF_API_TOKEN` y un `API_KEYS`. Nunca subas
-   `.env` ni pegues sus valores en un chat.
-3. Arranca con esas variables:
+1. En el mismo `.env` (paso 1 de arriba), pon en tu editor `MODEL_PROVIDER=gateway`, tu `CF_ACCOUNT_ID` y tu
+   `CF_API_TOKEN`. Nunca subas `.env` ni pegues sus valores en un chat.
+2. Arranca con esas variables:
 
 ```bash
 uv run --env-file .env uvicorn app.main:app --no-access-log
@@ -85,6 +86,10 @@ un UUID.
   `HIDE_INPUTS` y `HIDE_OUTPUTS` en `true`. Detalle en [`doc/compliance-checklist.md`](doc/compliance-checklist.md).
 - **Página**: la clave vive en `sessionStorage` y viaja en `X-API-Key`; con `401` muestra «Clave inválida» y con
   `429` «Demasiadas preguntas; espera N segundos».
+- **Secretos**: solo en variables de entorno: `.env` en tu equipo (git ignora `.env` y cualquier `.env.*`, salvo
+  la plantilla) y **Environment** en Render (`sync: false` en el Blueprint). Nunca en el código, el repositorio, un
+  comando ni un chat: los ejemplos los leen sin eco o desde `.env`. `.env.example` lleva los secretos vacíos y
+  `tests/test_secrets.py` comprueba que siga así y que ninguna instrucción ponga una clave dentro de un comando.
 
 ## Costos
 
@@ -134,6 +139,7 @@ Todas están en [`.env.example`](.env.example), con los secretos vacíos.
 | `CACHE_TTL_SECONDS` | `0` | Caché del gateway en segundos (0: apagada) |
 | `PRICES_PATH` | `data/model_prices.json` | Precios por modelo; una ruta relativa se toma desde `product/` |
 | `PORT` | `8000` | Puerto del contenedor (Render lo define) |
+| `SMOKE_API_KEY` | (sin valor) | Clave de un cliente para la prueba de humo (`scripts/smoke.py` y la verificación `production`); la aplicación no la lee. **Secreto**: léela sin eco (ver «Despliegue») |
 
 Un valor inválido (por ejemplo `AGENT_MAX_STEPS=0`, `HIDE_INPUTS=maybe` o `MODEL_PROVIDER=gateway` sin
 `CF_API_TOKEN`) o una configuración de producción que no cumple impiden arrancar, con un mensaje que dice qué
@@ -192,15 +198,27 @@ Para publicar, una vez aprobado:
 3. Escribe en Render los secretos `API_KEYS`, `CF_ACCOUNT_ID` y `CF_API_TOKEN` (nunca en el repositorio ni en un
    chat). `LANGSMITH_API_KEY` se agrega en **Environment** solo si enciendes las trazas.
 4. Cuando el servicio esté **Live**, corre la prueba de humo con la clave de un cliente (solo la parte después de
-   `cliente:`) en una variable de entorno:
-
-```bash
-SMOKE_API_KEY='<clave>' python scripts/smoke.py https://m4-hr-assistant.onrender.com          # Bash
-```
+   `cliente:`) en la variable `SMOKE_API_KEY`. Léela **sin eco** justo antes de usarla y bórrala al terminar:
+   nunca la escribas en el comando, porque quedaría en el historial de la consola.
 
 ```powershell
-$env:SMOKE_API_KEY = '<clave>'; python scripts/smoke.py https://m4-hr-assistant.onrender.com   # PowerShell
+# PowerShell: pide la clave sin mostrarla; vive solo en esta sesión
+$env:SMOKE_API_KEY = [Net.NetworkCredential]::new('', (Read-Host 'Clave' -AsSecureString)).Password
+uv run python scripts/smoke.py https://m4-hr-assistant.onrender.com
+Remove-Item Env:SMOKE_API_KEY
 ```
+
+```bash
+# Bash
+read -rsp 'Clave: ' SMOKE_API_KEY && echo && export SMOKE_API_KEY
+uv run python scripts/smoke.py https://m4-hr-assistant.onrender.com
+unset SMOKE_API_KEY
+```
+
+Alternativa: escribe la clave en `SMOKE_API_KEY` dentro de `.env` (en tu editor) y corre
+`uv run --env-file .env python scripts/smoke.py https://m4-hr-assistant.onrender.com`. La misma variable sirve para
+la verificación de la fábrica, desde la raíz: `uv run python -m verification production <url>`. Un argumento de
+más (por ejemplo, la clave después de la URL) se rechaza.
 
 Imprime `[OK]` o `[FAIL]` para `/health` (200), `/ask` sin clave (401) y `/ask` con clave (200). El plan gratuito
 duerme el servicio tras 15 minutos sin uso; la primera petición puede tardar hasta un minuto.

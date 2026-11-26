@@ -1,8 +1,9 @@
 """Prueba de humo del HR Assistant publicado.
 
-Uso (la clave va en una variable de entorno, nunca en el comando ni en un chat):
-
-    SMOKE_API_KEY=<clave> python scripts/smoke.py https://<servicio>.onrender.com
+Uso: ``uv run python scripts/smoke.py https://<servicio>.onrender.com``, con la clave de
+un cliente en la variable ``SMOKE_API_KEY``. La clave nunca va en el comando (quedaría
+en el historial de la consola) ni en un chat: se lee sin eco o desde ``.env``, como
+muestra el README en «Despliegue». Un argumento de más se rechaza.
 
 Comprueba tres cosas e imprime ``[OK]`` o ``[FAIL]`` en cada una, con el código HTTP
 recibido (401: la clave no coincide; 502: el modelo no responde):
@@ -58,7 +59,12 @@ def main(args: list[str]) -> int:
     """
     key = os.environ.get("SMOKE_API_KEY", "").strip()
     if len(args) != 1 or not key:
-        print("Uso: SMOKE_API_KEY=<clave> python scripts/smoke.py <url>")
+        # Solo ASCII: la consola de Windows no siempre muestra bien los acentos.
+        print(
+            "Uso: uv run python scripts/smoke.py <url>, con la clave en la variable "
+            "SMOKE_API_KEY (leela sin eco; nunca en el comando). Ver README, "
+            "seccion Despliegue."
+        )
         return 2
     with httpx.Client(timeout=TIMEOUT_SECONDS) as client:
         results = run_checks(args[0].rstrip("/"), key, client)
