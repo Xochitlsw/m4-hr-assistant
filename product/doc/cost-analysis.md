@@ -7,19 +7,26 @@ y [0022](adr/0022-cost-levers-in-production-and-gateway-cache.md).
 
 ## 1. Precios y fecha
 
-Fuente: <https://developers.cloudflare.com/workers-ai/platform/pricing/>, copiados en `data/model_prices.json`
-el 2026-11-04. **Por confirmar** con la página vigente antes de la entrega: los precios cambian.
+Fuente: <https://developers.cloudflare.com/workers-ai/platform/pricing/>. Se copiaron en
+`data/model_prices.json` el 2026-11-04 y se **confirmaron contra la tabla vigente el 2026-11-26**.
 
-| Modelo | Uso | Entrada (USD por millón de tokens) | Salida (USD por millón de tokens) |
+| Modelo | Uso | Entrada, por millón de tokens | Salida, por millón de tokens |
 | --- | --- | --- | --- |
-| `@cf/meta/llama-3.1-8b-instruct-fast` | `MODEL_SMALL`, preguntas simples | 0.045 | 0.384 |
-| `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | `MODEL_LARGE`, preguntas complejas y línea base | 0.293 | 2.253 |
+| `@cf/meta/llama-3.1-8b-instruct-fast` | `MODEL_SMALL`, preguntas simples | 0.045 USD (4 119 neuronas) | 0.384 USD (34 868 neuronas) |
+| `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | `MODEL_LARGE`, preguntas complejas y línea base | 0.293 USD (26 668 neuronas) | 2.253 USD (204 805 neuronas) |
+
+- **Nombre del modelo pequeño.** La tabla vigente no lista `@cf/meta/llama-3.1-8b-instruct-fast`. Lista
+  `@cf/meta/llama-3.1-8b-instruct-fp8-fast` al mismo precio. El producto conserva el nombre que usa, que responde
+  por el gateway, y lo cobra con ese precio. Mejora futura: cambiar al nombre que lista la tabla.
 
 - Costo de una llamada = (tokens de entrada × precio de entrada + tokens de salida × precio de salida) / 1 000 000
   (`app/pricing.py`).
 - Una llamada que contesta la caché del gateway (`cf-aig-cache-status: HIT`) cuesta 0.
-- Workers AI cobra en neuronas y regala 10 000 al día (unos 0.11 USD, a 0.011 USD por cada 1 000 neuronas;
-  por confirmar). Los precios por token de la tabla son su equivalente.
+- **Neuronas.** Workers AI cobra en neuronas: 10 000 gratis al día, que se reinician a las 00:00 UTC. En Workers
+  Paid, lo que pasa de ellas cuesta 0.011 USD por cada 1 000 neuronas. La asignación gratis equivale a unos
+  0.11 USD diarios, y los precios por token de la tabla son su equivalente.
+- **Consumo real.** `cost_usd` es la estimación por tokens; el consumo real se valida en el panel de Cloudflare
+  (Workers AI, neuronas por día).
 
 ## 2. Cómo se mide
 
@@ -116,8 +123,13 @@ por palabras: la muestra real da los montos absolutos y esta tabla se actualiza 
 
 - **Caché:** con una tasa de aciertos `h`, el costo de producción baja a un factor (1 − h), aproximadamente. La
   tasa real se lee en `cache_hit_rate` de `/metrics`.
-- **Cuota gratis:** a este ritmo, producción gasta unos 0.02 USD al día y cabe en las 10 000 neuronas diarias
-  (unos 0.11 USD). La línea base (0.14 USD al día) no cabría.
+- **Asignación gratis:** a este ritmo, producción gasta unos 0.02 USD al día y cabe en las 10 000 neuronas
+  diarias (unos 0.11 USD). La línea base, con 0.14 USD al día, no cabría:
+
+  | Configuración | Neuronas al día (1 000 peticiones) | USD al mes en Workers Paid, sin contar las 10 000 gratis |
+  | --- | --- | --- |
+  | Línea base | ~12 900 | ~0.95 |
+  | Producción | ~1 800 | 0.00 |
 - **Presupuesto por cliente:** 1 USD al día alcanza para unas 51 000 respuestas de producción, o 7 000 de línea
   base. Es un techo contra abuso o errores (OWASP LLM10), no un límite del uso normal; al pasarlo, la API responde
   `429` con `budget_exceeded`.

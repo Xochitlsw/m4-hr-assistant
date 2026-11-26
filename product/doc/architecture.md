@@ -1,4 +1,4 @@
-# Arquitectura del HR Assistant · Sesión 4
+# Arquitectura del HR Assistant
 
 Asistente de Recursos Humanos que responde preguntas sobre empleados desde una página web. Es una API FastAPI
 **sin estado** con **un agente** de bucle con tope y dos herramientas de solo lectura:
@@ -252,7 +252,7 @@ Runbook completo en [`observability.md`](observability.md) (ADR 0021).
 | `MODEL_RETRY_BACKOFF_SECONDS` | `0.5` | Número >= 0 |
 | `CIRCUIT_FAILURE_THRESHOLD` | `5` | Entero >= 1 |
 | `CIRCUIT_OPEN_SECONDS` | `30` | Número > 0 |
-| `CACHE_TTL_SECONDS` | `0` | Entero >= 0; 0 salta la caché; producción `300`, máximo `900` |
+| `CACHE_TTL_SECONDS` | `0` | `0` (salta la caché) o un entero >= 60; producción `300`, máximo `900` |
 | `PRICES_PATH` | `data/model_prices.json` | Relativa a `product/`; debe tener los dos modelos |
 | `PORT` | `8000` | Puerto del contenedor (Render lo define) |
 

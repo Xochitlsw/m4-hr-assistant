@@ -109,10 +109,21 @@ def test_invalid_cost_values_stop_the_start():
         ("MODEL_TEMPERATURE", "3"),
         ("MODEL_TIMEOUT_SECONDS", "0"),
         ("CACHE_TTL_SECONDS", "-1"),
+        ("CACHE_TTL_SECONDS", "1"),
+        ("CACHE_TTL_SECONDS", "59"),
     ]
     for name, value in invalid:
         with pytest.raises(ConfigError, match=name):
             load_settings({name: value})
+
+
+def test_the_cache_ttl_is_off_or_at_least_the_gateway_minimum():
+    """AI Gateway guarda en caché de 60 s en adelante: 0 la salta."""
+    for value, expected in (("0", 0), ("60", 60), ("300", 300)):
+        settings = load_settings({"CACHE_TTL_SECONDS": value})
+        assert settings.models.gateway.cache_ttl_seconds == expected
+    with pytest.raises(ConfigError, match="0 .*or an integer >= 60"):
+        load_settings({"CACHE_TTL_SECONDS": "30"})
 
 
 def test_security_defaults_and_invalid_values():

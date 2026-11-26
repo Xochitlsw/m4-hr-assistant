@@ -1,10 +1,10 @@
 # Ablación de las palancas de costo (modelo simulado)
 
-Generado: 2026-11-26 19:55 UTC con `uv run python scripts/cost_ablation.py`.
+Generado: 2026-11-26 20:15 UTC con `uv run python scripts/cost_ablation.py`.
 Set de evaluación de la fábrica: 8 preguntas, cada una con 10
 mensajes de historial de relleno (los mismos de `verification evaluate`).
 
-Precios en USD por millón de tokens, revisados: 2026-11-04 (verify before class: prices change).
+Precios en USD por millón de tokens, revisados: 2026-11-26, contra la tabla vigente.
 - `@cf/meta/llama-3.1-8b-instruct-fast`: entrada 0.045, salida 0.384
 - `@cf/meta/llama-3.3-70b-instruct-fp8-fast`: entrada 0.293, salida 2.253
 

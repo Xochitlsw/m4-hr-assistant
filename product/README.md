@@ -1,17 +1,54 @@
 # HR Assistant
 
-Asistente de Recursos Humanos que responde preguntas sobre empleados desde una página web. Es una API FastAPI
-**sin estado** con un agente de bucle con tope y dos herramientas de solo lectura (`get_employee`,
-`search_by_department`) sobre `data/employees.json`.
+Asistente de Recursos Humanos que responde preguntas sobre empleados desde una página web. Está llevado a
+producción con observabilidad, control de costos y seguridad. Es una API FastAPI **sin estado** con un agente de
+bucle con tope y dos herramientas de solo lectura (`get_employee`, `search_by_department`) sobre
+`data/employees.json`.
 
-- **Rastreable**: `request_id`, log JSON, auditoría, `/metrics` con SLO y trazas opcionales en LangSmith.
-- **Con costo visible**: cada respuesta dice qué modelo usó, por qué y cuánto costó, con cuatro palancas de costo
-  medidas contra una línea base.
-- **Listo para producción**: clave por cliente, límite de peticiones, reglas de compliance que impiden arrancar mal
-  configurado, contenedor, pipeline de CI y Blueprint de Render.
+El sistema multi-agente tiene **dos capas** (ADR 0020):
 
-Arquitectura y decisiones: [`doc/architecture.md`](doc/architecture.md), [`doc/adr/`](doc/adr/) y
-[`doc/compliance-checklist.md`](doc/compliance-checklist.md).
+- **Capa 1, la fábrica** (raíz del repositorio): especificaciones, agentes con roles y permisos separados, y las
+  verificaciones que juzgan cada entrega. En cada push, el trabajo `factory` del CI corre esas verificaciones, y
+  Render solo publica si pasan.
+- **Capa 2, el HR Assistant** (esta carpeta): el agente que atiende `POST /ask` en Render, con modelos de Workers
+  AI vía AI Gateway y trazas en LangSmith.
+
+```mermaid
+flowchart LR
+  subgraph capa1["Capa 1 · La fábrica, en GitHub Actions"]
+    verif["verification/<br/>unit · contract · qa · e2e · evaluate"]
+  end
+  user(["Personal de RH"]) -- "página o API · X-API-Key" --> guard
+  subgraph capa2["Capa 2 · HR Assistant en Render (contenedor sin root)"]
+    guard["Entrada<br/>tope del cuerpo · clave · límites · validación<br/>datos personales · prompt injection"]
+    guard --> router["Enrutador<br/>8B o 70B · ventana de 6 mensajes"]
+    router --> agent["Agente con tope de pasos<br/>salida validada"]
+    agent --> tools["get_employee · search_by_department<br/>solo lectura"]
+    agent --> model["Modelo<br/>reintentos · circuito · fallback"]
+    agent --> clean["Salida sanitizada y redactada"]
+  end
+  model --> cf[("Cloudflare AI Gateway<br/>Workers AI · caché de 300 s")]
+  agent -. "trazas redactadas" .-> ls[("LangSmith")]
+  clean -. "log JSON con request_id · /metrics · /dashboard" .-> ops(["Operación"])
+  verif -- "en verde: checksPass" --> guard
+```
+
+- **Rastreable**: `request_id` en todo, log JSON con auditoría, `/metrics` y `/dashboard`, y un árbol de trazas
+  por pregunta en LangSmith.
+- **Con costo medido**: cada respuesta dice qué modelo usó, por qué y cuánto costó. Cuatro palancas de costo
+  están medidas contra una línea base: con el modelo simulado, 86.2 % menos costo con la misma calidad.
+- **Seguro en capas**: 21 controles con su riesgo de OWASP LLM 2025, su prueba y su evidencia.
+- **Listo para producción**: compliance como código, resiliencia del modelo, contenedor sin privilegios, CI con
+  seis trabajos y Blueprint de Render que publica solo con el CI en verde.
+
+| Tema | Documento |
+| --- | --- |
+| Arquitectura, flujo y despliegue | [`doc/architecture.md`](doc/architecture.md) y [`doc/adr/`](doc/adr/) (22 decisiones) |
+| Costos | [`doc/cost-analysis.md`](doc/cost-analysis.md) |
+| Seguridad | [`doc/security.md`](doc/security.md) y [`doc/compliance-checklist.md`](doc/compliance-checklist.md) |
+| Observabilidad y runbook | [`doc/observability.md`](doc/observability.md) |
+| Contrato de la API | [`doc/openapi.json`](doc/openapi.json) y `GET /docs` |
+| Evidencias | [`doc/evidence/README.md`](doc/evidence/README.md) |
 
 ## Requisitos
 
@@ -25,7 +62,38 @@ Arquitectura y decisiones: [`doc/architecture.md`](doc/architecture.md), [`doc/a
 - Para el modelo real: una cuenta de Cloudflare con Workers AI y un AI Gateway (por omisión, `default`), y un
   token con **solo** estos permisos: **Workers AI: Read y Edit** y **AI Gateway: Run**. El gateway exige su propia
   autenticación: el producto manda el mismo token en `Authorization` y en `cf-aig-authorization` (ADR 0008).
+- Para las trazas: una cuenta de LangSmith con una clave de tipo **Tracing Only** (solo crea trazas y proyectos).
 - Para publicar: una cuenta de GitHub y otra de Render. Docker es opcional: el CI construye la imagen.
+
+## Instalación
+
+Desde una consola, clona el repositorio y crea el entorno en su raíz; `uv run` lo encuentra también desde
+`product/`. Las dependencias de desarrollo incluyen las de ejecución, las pruebas y las verificaciones de la
+fábrica.
+
+```powershell
+# PowerShell
+git clone https://github.com/<usuario>/m4-hr-assistant.git
+cd m4-hr-assistant
+uv venv --python 3.12
+uv pip install --require-hashes -r product/requirements-dev.txt
+uv run playwright install chromium    # solo para las pruebas e2e
+cd product
+```
+
+```bash
+# Bash
+git clone https://github.com/<usuario>/m4-hr-assistant.git
+cd m4-hr-assistant
+uv venv --python 3.12
+uv pip install --require-hashes -r product/requirements-dev.txt
+uv run playwright install chromium    # solo para las pruebas e2e
+cd product
+```
+
+Sin uv, con Python 3.12: `python -m venv .venv`, activa el entorno (`.venv\Scripts\Activate.ps1` en PowerShell,
+`source .venv/bin/activate` en Bash) y corre `python -m pip install --require-hashes --no-deps -r
+product/requirements-dev.txt`, como el CI. Después usa `python` donde este documento dice `uv run python`.
 
 ## Cómo correrlo
 
@@ -63,6 +131,15 @@ uv run --env-file .env uvicorn app.main:app --no-access-log
 El plan gratuito de Workers AI tiene una cuota diaria: prueba primero con el modelo simulado. Si el gateway no
 responde o se agota la cuota, `POST /ask` responde `502 {"detail": "model unavailable", "request_id": ...}`.
 
+### Con Docker (opcional)
+
+La misma imagen que publica Render, con tu `.env` (desde `product/`):
+
+```bash
+docker build -t m4-hr-assistant .
+docker run --rm -p 8000:8000 --env-file .env m4-hr-assistant
+```
+
 ## API
 
 | Método y ruta | Clave | Qué hace |
@@ -74,6 +151,30 @@ responde o se agota la cuota, `POST /ask` responde `502 {"detail": "model unavai
 | `GET /docs` | No | Documentación interactiva (Swagger) con **Authorize** para `X-API-Key`, cada error con su ejemplo; el contrato exportado está en [`doc/openapi.json`](doc/openapi.json) |
 | `POST /ask` | `X-API-Key` | Cuerpo `{"question": "...", "history": [...]}`; responde `answer`, `steps`, `tools_used`, `input_tokens`, `output_tokens`, `request_id`, `model`, `route`, `cached_calls` y `cost_usd` |
 | `GET /metrics` | `X-API-Key` | Peticiones, `error_rate`, latencia p50/p95, tokens, SLO y `cost_usd` acumulado de este proceso |
+
+Ejemplo, con el servidor local y la clave pedida sin mostrarla (nunca escrita en el comando):
+
+```powershell
+# PowerShell
+$key = [Net.NetworkCredential]::new('', (Read-Host 'Clave' -AsSecureString)).Password
+$body = [Text.Encoding]::UTF8.GetBytes('{"question": "¿Quién es EMP-0004?"}')
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/ask -Headers @{ 'X-API-Key' = $key } `
+  -ContentType 'application/json' -Body $body
+Remove-Variable key
+```
+
+```bash
+# Bash
+read -rsp 'Clave: ' KEY && echo
+curl -s http://127.0.0.1:8000/ask -H "X-API-Key: $KEY" -H 'Content-Type: application/json' \
+  -d '{"question": "¿Quién es EMP-0004?"}'
+unset KEY
+```
+
+Responde, por ejemplo: `{"answer": "Jorge Díaz es Desarrollador en Tecnología, activo.", "steps": 2,
+"tools_used": ["get_employee"], "input_tokens": 127, "output_tokens": 23, "request_id": "...", "model":
+"@cf/meta/llama-3.1-8b-instruct-fast", "route": "simple", "cached_calls": 0, "cost_usd": 0.00001455}`. En
+`/docs`, **Authorize** pide la clave y cada ruta trae sus ejemplos.
 
 Errores: `401 {"detail": "invalid or missing API key"}`; `429` con `Retry-After` y uno de tres motivos
 (`too many failed authentication attempts`, `daily budget exceeded` o `rate limit exceeded`);
@@ -93,7 +194,7 @@ un UUID.
 - **Clave por cliente**: `API_KEYS=cliente:clave,cliente2:clave2`. La clave se compara con `hmac.compare_digest` y
   nunca se escribe en el log, la traza ni un error. Si `API_KEYS` está mal formada, el producto no arranca y el
   mensaje dice qué entrada falla y su largo, nunca su valor.
-- **Controles completos**: [`doc/security.md`](doc/security.md) lista los 19 controles con su riesgo (OWASP LLM
+- **Controles completos**: [`doc/security.md`](doc/security.md) lista los 21 controles con su riesgo (OWASP LLM
   2025), dónde están, cómo se prueban y su evidencia, más el modelo de amenazas, la matriz de mínimo privilegio y
   la rotación de secretos. `scripts/security_check.py <url>` manda 13 casos de ataque y compara lo esperado con lo
   obtenido (`doc/evidence/security-check.txt`).
@@ -214,7 +315,7 @@ Todas están en [`.env.example`](.env.example), con los secretos vacíos.
 | `CIRCUIT_FAILURE_THRESHOLD` | `5` | Llamadas fallidas seguidas que abren el circuito de un modelo (entero >= 1) |
 | `CIRCUIT_OPEN_SECONDS` | `30` | Tiempo con el circuito abierto antes de la llamada de prueba (número > 0) |
 | `WEB_CONCURRENCY` | `1` | Procesos de uvicorn; cada uno con sus métricas, límites y circuitos (ADR 0019) |
-| `CACHE_TTL_SECONDS` | `0` | Caché del gateway en segundos (0: se salta); producción usa `300` y no acepta más de `900` |
+| `CACHE_TTL_SECONDS` | `0` | Caché del gateway en segundos: `0` la salta; si no, `60` o más (el mínimo de AI Gateway). Producción usa `300` y no acepta más de `900` |
 | `PRICES_PATH` | `data/model_prices.json` | Precios por modelo; una ruta relativa se toma desde `product/` |
 | `PORT` | `8000` | Puerto del contenedor (Render lo define) |
 | `SMOKE_API_KEY` | (sin valor) | Clave de un cliente para la prueba de humo (`scripts/smoke.py` y la verificación `production`); la aplicación no la lee. **Secreto**: léela sin eco (ver «Despliegue») |
@@ -297,16 +398,19 @@ Nada se publica sin que una persona lo apruebe. Las piezas:
   Cada acción va fijada al SHA de su commit y cada `pip install` usa `--require-hashes`.
 - **Render** (`render.yaml` en la **raíz**, con `rootDir: product`): Blueprint con el servicio `m4-hr-assistant`
   (el mismo nombre del repositorio), `runtime: docker`, `plan: free`, `healthCheckPath: /health` y
-  `autoDeployTrigger: checksPass` (publica solo si todos los trabajos del CI pasan). Declara `ENVIRONMENT=production`, `MODEL_PROVIDER=gateway` y `HIDE_*=redact` (trazas
-  redactadas).
+  `autoDeployTrigger: checksPass` (publica solo si todos los trabajos del CI pasan). Declara
+  `ENVIRONMENT=production`, `MODEL_PROVIDER=gateway`, las palancas de costo (ADR 0022), `TRUSTED_PROXY_HOPS=1`
+  y las trazas encendidas y redactadas en el proyecto `m4-hr-assistant-prod`.
 
 Para publicar, una vez aprobado:
 
-1. Sube el repositorio a GitHub y revisa en **Actions** que los seis trabajos pasen.
+1. Sube el repositorio a GitHub y revisa en **Actions** que los seis trabajos pasen. En un fork, GitHub apaga
+   Actions hasta que lo habilitas en esa pestaña; sin el CI, Render no publica (`checksPass`).
 2. En Render: **New > Blueprint**, elige el repositorio. El resumen debe decir **Create web service** (si dice
    Update, ya existe un servicio con ese nombre).
 3. Escribe en Render los secretos `API_KEYS`, `CF_ACCOUNT_ID` y `CF_API_TOKEN` (nunca en el repositorio ni en un
-   chat). `LANGSMITH_API_KEY` se agrega en **Environment** solo si enciendes las trazas.
+   chat). Agrega también `LANGSMITH_API_KEY` (Tracing Only) en **Environment**: el Blueprint ya enciende las
+   trazas, redactadas, y empiezan en cuanto existe la clave.
 4. Cuando el servicio esté **Live**, corre la prueba de humo con la clave de un cliente (solo la parte después de
    `cliente:`) en la variable `SMOKE_API_KEY`. Léela **sin eco** justo antes de usarla y bórrala al terminar:
    nunca la escribas en el comando, porque quedaría en el historial de la consola.
@@ -354,3 +458,35 @@ uv run python -m verification evaluate   # calidad y costo: línea base contra p
 Las pruebas nunca salen a la red: el modelo real se prueba con un cliente HTTP falso y usan claves de prueba que
 no sirven en ningún otro lugar. Para `e2e` hace falta Chromium de Playwright (`uv run playwright install chromium`;
 detrás de un proxy que inspecciona TLS, con `NODE_USE_SYSTEM_CA=1` para usar los certificados del sistema).
+
+## Evidencias
+
+[`doc/evidence/README.md`](doc/evidence/README.md) lista cada evidencia: qué prueba, con qué comando se genera y
+cuáles se toman contra Render. Ninguna lleva claves, tokens, datos personales reales ni texto de conversaciones.
+
+## Limitaciones y mejoras futuras
+
+Limitaciones conocidas:
+
+- **Estado por proceso.** Las métricas, el límite por cliente, el presupuesto diario y los circuitos viven en la
+  memoria de cada proceso. Con varias réplicas o `WEB_CONCURRENCY` > 1 no se suman (ADR 0017 y 0019).
+- **Plan gratuito de Render.** El servicio duerme tras 15 minutos sin uso: la primera petición tarda hasta un
+  minuto. Las métricas se reinician con cada arranque.
+- **Autenticación de clientes, no de personas.** No hay SSO; una clave identifica a un cliente.
+- **Detectores por patrones.** Los datos personales y las inyecciones se detectan con reglas: lo que no tiene
+  forma reconocible (un domicilio, una inyección parafraseada) puede pasar. Lo contienen las capas siguientes
+  (`doc/security.md` §5).
+- **Set de evaluación sin preguntas complejas.** No mide la calidad del enrutamiento en comparaciones o resúmenes
+  (`doc/cost-analysis.md` §3).
+- **Nombre del modelo pequeño.** `@cf/meta/llama-3.1-8b-instruct-fast` responde, pero la tabla de precios vigente
+  lo lista como `@cf/meta/llama-3.1-8b-instruct-fp8-fast`, al mismo precio.
+
+Mejoras futuras:
+
+- Contadores compartidos (por ejemplo, Redis) para escalar a varias réplicas, y alertas automáticas sobre los
+  umbrales de `doc/observability.md` §6.
+- Un clasificador de inyección con modelo y detección de entidades (Presidio), medidos en costo y latencia.
+- Guardar solo el hash de las claves de `API_KEYS`.
+- Preguntas complejas y de seguimiento en el set de evaluación, y las palancas extra que aún no se midieron
+  (`doc/cost-analysis.md` §8).
+- Cambiar el modelo pequeño al nombre que lista la tabla de precios.

@@ -1,7 +1,7 @@
 # Seguridad del HR Assistant
 
 Controles implementados, por qué existen, dónde están en el código, cómo se prueban y qué evidencia dejan. El
-detalle de cada decisión está en los ADR 0009 a 0017; las reglas que impiden arrancar mal configurado, en
+detalle de cada decisión está en los ADR 0008 a 0017 y 0022; las reglas que impiden arrancar mal configurado, en
 [`compliance-checklist.md`](compliance-checklist.md).
 
 La seguridad va en capas: lo que una capa no detiene, lo contiene la siguiente. Una inyección parafraseada que
@@ -17,7 +17,9 @@ validados, un tope de pasos y una salida limpia y redactada.
 | Usuario que escribe instrucciones para el modelo | Que el agente ignore sus reglas, revele el prompt o llame herramientas falsas | 2, 5, 6, 13 |
 | Historial falsificado por el cliente | Turnos `assistant` inventados con el protocolo del agente | 1, 2 |
 | La propia persona de RH, por error | Pegar una CURP o un token en la pregunta | 3, 4 |
-| Un servicio externo (proveedor del modelo, LangSmith) | Recibir datos personales o secretos | 3, 4, 18 |
+| Un servicio externo (proveedor del modelo, LangSmith) | Recibir datos personales o secretos | 3, 4, 18, 20 |
+| Alguien con el token de Cloudflare filtrado | Usar los modelos o leer la configuración y los registros del gateway | 20, 11 (rotación) |
+| Una respuesta guardada en la caché del gateway | Servirse vieja o a quien no la pidió | 21 |
 | Un navegador de otro origen | Leer respuestas, meter la página en un marco, correr scripts inyectados | 15, 6 |
 | La cadena de suministro | Una dependencia vulnerable o alterada, una acción de CI movida | 17 |
 | Quien lee los logs | Encontrar texto de personas, claves o IP | 19, 11 |
@@ -55,21 +57,23 @@ validados, un tope de pasos y una salida limpia y redactada.
 | 17 | Cadena de suministro: locks con hashes, imagen solo con dependencias de ejecución y base por digest, `pip-audit`, gitleaks del historial, acciones por SHA | LLM03 | `requirements*.txt`, `Dockerfile`, `.github/workflows/ci.yml` | `tests/test_delivery.py`; trabajos `security` y `docker` | `evidence/ci-local-rehearsal.txt` |
 | 18 | Trazas sin texto en claro: redactadas u ocultas; producción no acepta trazas en claro | LLM02 | `app/tracing.py`, `app/compliance.py` | `tests/test_tracing.py`, `tests/test_compliance.py` | ADR 0014 |
 | 19 | Logs sin texto, claves ni IP (huella HMAC del origen) | LLM02 | `app/logs.py`, `app/main.py`, `app/security.py` · `OriginFingerprint` | `tests/test_access.py`, `production.feature`, `tests/test_privacy_api.py` | `security-check.txt` |
+| 20 | Acceso al modelo con dos credenciales y mínimo privilegio: el AI Gateway exige su autenticación; el mismo token, con solo Workers AI (Read, Edit) y AI Gateway (Run), va en `Authorization` y `cf-aig-authorization` y nunca en el log, las trazas ni los errores | LLM02, LLM10 | `app/gateway.py` · `_headers` | `tests/test_gateway.py`, `tests/test_tracing.py::test_the_gateway_token_never_reaches_the_traces_or_the_log` | ADR 0008; sección 4 |
+| 21 | Caché del gateway acotada: clave = hash del cuerpo ya redactado (sin token ni `request_id`), TTL de 0 o de 60 a 900 s en producción, `cf-aig-skip-cache` con 0 | LLM02, LLM09 | `app/gateway.py` · `cache_key`, `app/config.py`, `app/compliance.py` | `tests/test_gateway.py`, `tests/test_config.py`, `tests/test_compliance.py`, `tests/test_delivery.py` | ADR 0022; `evidence/cost-real-model.md` (`HIT` en la repetición) |
 
 ### Mapeo OWASP Top 10 para aplicaciones LLM (2025)
 
 | Riesgo | Controles |
 | --- | --- |
 | LLM01 Prompt Injection | 1, 2, 5, 13 (aunque pase, el agente solo lee el directorio) |
-| LLM02 Sensitive Information Disclosure | 3, 4, 11, 16, 18, 19 |
+| LLM02 Sensitive Information Disclosure | 3, 4, 11, 16, 18, 19, 20, 21 |
 | LLM03 Supply Chain | 17 |
 | LLM04 Data and Model Poisoning | Los datos son un archivo versionado y de solo lectura en la imagen (13); no hay entrenamiento ni ajuste |
 | LLM05 Improper Output Handling | 5, 6, 15 |
 | LLM06 Excessive Agency | 5, 13 (dos herramientas de solo lectura, tope de pasos) |
 | LLM07 System Prompt Leakage | 2 (regla `system_prompt` y `reveal`); el prompt no tiene secretos |
 | LLM08 Vector and Embedding Weaknesses | No aplica: no hay RAG ni embeddings |
-| LLM09 Misinformation | El agente responde solo con datos de las herramientas; `verification evaluate` mide la calidad |
-| LLM10 Unbounded Consumption | 1, 8, 10, 14 (topes de producción), `max_tokens` y timeout del modelo |
+| LLM09 Misinformation | El agente responde solo con datos de las herramientas; `verification evaluate` mide la calidad; la caché no pasa de 15 minutos (21) |
+| LLM10 Unbounded Consumption | 1, 8, 10, 14 (topes de producción), 20, `max_tokens` y timeout del modelo |
 
 ## 4. Mínimo privilegio: identidad → permisos
 

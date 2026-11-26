@@ -40,6 +40,8 @@ calidad y 86.2 % menos costo. Para producción faltaba:
 - Con `CACHE_TTL_SECONDS=0` se manda `cf-aig-skip-cache: true`: ninguna respuesta sale de la caché.
 - Un `HIT` (`cf-aig-cache-status`) cuesta 0 y cuenta en `cached_calls` y en `cache_hit_rate`, como desde la
   sesión 3.
+- **Valores aceptados:** 0 (sin caché) o de 60 segundos en adelante, que es el mínimo de AI Gateway. Con 1 a 59 el
+  producto no arranca (`app/config.py` · `_cache_ttl`).
 - **Compliance:** producción no arranca con `CACHE_TTL_SECONDS` mayor que 900 (15 minutos). La regla está en
   `app/compliance.py` · `CEILINGS`.
 
@@ -88,5 +90,9 @@ calidad y 86.2 % menos costo. Para producción faltaba:
   basta `CACHE_TTL_SECONDS=0` en Render, sin desplegar código. Se vigila con `cache_hit_rate` y `cached_calls`.
 - El set de evaluación de la fábrica solo tiene preguntas simples (las 8 van al modelo pequeño). Por eso no mide
   la calidad del enrutamiento en preguntas complejas; el análisis de costos lo registra como riesgo.
-- Los nombres de las cabeceras de caché siguen la documentación de AI Gateway (Caching). La muestra real confirma
-  el `HIT`; si no llega, la palanca se apaga (`CACHE_TTL_SECONDS=0`) y este ADR se actualiza.
+- Las cabeceras y los límites de la TTL coinciden con la documentación de AI Gateway (Caching y Custom metadata),
+  revisada el 2026-11-26: la caché está apagada por omisión en el gateway y una petición entra con
+  `cf-aig-cache-key`. La TTL va de 60 s a un mes. `cf-aig-metadata` acepta hasta 5 entradas y el producto manda
+  una.
+- La muestra real confirma el `HIT`. Si no llega, la palanca se apaga (`CACHE_TTL_SECONDS=0`) y este ADR se
+  actualiza.

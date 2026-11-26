@@ -2,7 +2,12 @@
   "currency": "USD",
   "unit": "per million tokens",
   "source": "https://developers.cloudflare.com/workers-ai/platform/pricing/",
-  "checked": "2026-11-04 (verify before class: prices change)",
+  "checked": "2026-11-26, contra la tabla vigente",
+  "notes": [
+    "@cf/meta/llama-3.1-8b-instruct-fast no aparece con ese nombre en la tabla: la tabla lista @cf/meta/llama-3.1-8b-instruct-fp8-fast al mismo precio (0.045 y 0.384; 4119 y 34868 neuronas por millon de tokens). El modelo responde por el gateway. Mejora futura: usar el nombre que lista la tabla.",
+    "@cf/meta/llama-3.3-70b-instruct-fp8-fast: 0.293 y 2.253 (26668 y 204805 neuronas por millon de tokens).",
+    "Workers AI cobra en neuronas: 10000 gratis al dia (se reinician a las 00:00 UTC) y despues 0.011 USD por cada 1000 neuronas (Workers Paid). El consumo real se valida en el panel de Cloudflare (neuronas)."
+  ],
   "models": {
     "fake": {"input": 0.0, "output": 0.0},
     "@cf/meta/llama-3.1-8b-instruct-fast": {"input": 0.045, "output": 0.384},

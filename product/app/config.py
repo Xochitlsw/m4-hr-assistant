@@ -62,6 +62,8 @@ ENVIRONMENTS = ("development", "production")
 # Que quepan los textos seguros del agente y la marca de recorte (ADR 0013).
 MIN_ANSWER_CHARS = 100
 MIN_BODY_BYTES = 1024
+# AI Gateway no guarda en caché menos de 60 segundos (ADR 0022).
+MIN_CACHE_TTL_SECONDS = 60
 
 
 class ConfigError(ValueError):
@@ -426,12 +428,30 @@ def _gateway(env: Mapping[str, str], provider: str) -> GatewaySettings:
         account_id=values["CF_ACCOUNT_ID"],
         gateway_id=values["CF_GATEWAY_ID"],
         api_token=values["CF_API_TOKEN"],
-        cache_ttl_seconds=_integer(env, "CACHE_TTL_SECONDS", 0),
+        cache_ttl_seconds=_cache_ttl(env),
         timeout_seconds=_number(
             env, "MODEL_TIMEOUT_SECONDS", lambda value: value > 0, "a number > 0"
         ),
         resilience=_resilience(env),
     )
+
+
+def _cache_ttl(env: Mapping[str, str]) -> int:
+    """TTL de la caché del gateway: 0 la salta; si no, el mínimo de AI Gateway.
+
+    :param env: Variables de entorno
+    :type env: Mapping[str, str]
+    :return: Segundos que el gateway guarda una respuesta (0: sin caché)
+    :rtype: int
+    :raises ConfigError: Si es negativa o está entre 1 y 59 segundos
+    """
+    value = _integer(env, "CACHE_TTL_SECONDS", 0)
+    if 0 < value < MIN_CACHE_TTL_SECONDS:
+        raise ConfigError(
+            "CACHE_TTL_SECONDS must be 0 (no cache) or an integer >= "
+            f"{MIN_CACHE_TTL_SECONDS}, got {value}"
+        )
+    return value
 
 
 def _resilience(env: Mapping[str, str]) -> ResilienceSettings:
