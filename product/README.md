@@ -67,8 +67,11 @@ responde o se agota la cuota, `POST /ask` responde `502 {"detail": "model unavai
 | `GET /metrics` | `X-API-Key` | Peticiones, `error_rate`, latencia p50/p95, tokens, SLO y `cost_usd` acumulado de este proceso |
 
 Errores: `401 {"detail": "invalid or missing API key"}`; `429 {"detail": "rate limit exceeded"}` con
-`Retry-After`; `422` si la pregunta está vacía o es demasiado larga; `502` si el modelo real falla;
-`500 {"detail": "internal error", "request_id": ...}` ante cualquier otra falla. Toda respuesta lleva
+`Retry-After`; `413 {"detail": "request body too large"}` si el cuerpo pasa de `MAX_BODY_BYTES` (antes de leerlo
+y antes de revisar la clave); `422` si la pregunta está vacía o es demasiado larga, si el historial trae más de
+`MAX_HISTORY_MESSAGES` mensajes o uno pasa del largo de su rol, o si hay caracteres de control o marcas
+bidireccionales; `502` si el modelo real falla; `500 {"detail": "internal error", "request_id": ...}` ante
+cualquier otra falla. Toda respuesta lleva
 `X-Request-ID`: si el cliente lo manda (1 a 128 caracteres de `A-Z a-z 0-9 . _ : -`) se respeta; si no, se genera
 un UUID.
 
@@ -79,8 +82,18 @@ un UUID.
   mensaje dice qué entrada falla y su largo, nunca su valor.
 - **Límite por cliente**: más de `RATE_LIMIT_PER_MINUTE` preguntas en un minuto responden `429` con `Retry-After`.
   El límite es por proceso.
-- **Auditoría**: el evento `audit` registra cada herramienta (`tool_call`) y cada rechazo (`auth_failed` con su
-  motivo, `rate_limited` con la espera), con el `client` cuando se conoce.
+- **Validación de entradas**: el cuerpo tiene tope (`413`); la pregunta, de 1 a `MAX_QUESTION_CHARS` caracteres;
+  el historial, hasta `MAX_HISTORY_MESSAGES` mensajes, cada `user` con el tope de la pregunta y cada `assistant`
+  con el de la respuesta (nada más largo pudo salir de esta API); ningún texto acepta caracteres de control (salvo
+  tabulador y saltos de línea) ni marcas bidireccionales. Todo lo demás responde `422`.
+- **Validación de salidas**: el agente solo ejecuta las dos herramientas de la lista blanca, con `employee_id` de
+  la forma `EMP-0000` y un departamento que existe en los datos (normalizados antes de ejecutar). La respuesta
+  sale sin caracteres de control ni etiquetas HTML y con `MAX_ANSWER_CHARS` como máximo (se marca
+  « [respuesta recortada]»); la página además la pinta con `textContent`.
+- **Auditoría**: el evento `audit` registra cada herramienta (`tool_call`), cada rechazo (`auth_failed` con su
+  motivo, `rate_limited` con la espera), cada respuesta del modelo fuera del protocolo (`output_rejected` con su
+  motivo, por ejemplo `bad_employee_id`) y cada limpieza de la respuesta (`output_sanitized` con los cambios),
+  con el `client` cuando se conoce y nunca el texto.
 - **Compliance como código**: con `ENVIRONMENT=production` el producto **no arranca** si `MODEL_PROVIDER=fake`, si
   `API_KEYS` está vacía o tiene una clave de menos de 16 caracteres, o si `LANGSMITH_TRACING=true` sin
   `HIDE_INPUTS` y `HIDE_OUTPUTS` en `true`. Detalle en [`doc/compliance-checklist.md`](doc/compliance-checklist.md).
@@ -117,7 +130,10 @@ Todas están en [`.env.example`](.env.example), con los secretos vacíos.
 | `RATE_LIMIT_PER_MINUTE` | `30` | Preguntas por cliente por minuto (entero >= 1) |
 | `MODEL_PROVIDER` | `fake` | `fake` (simulado) o `gateway` (Workers AI vía AI Gateway) |
 | `AGENT_MAX_STEPS` | `3` | Tope de vueltas del agente (entero >= 1) |
-| `MAX_QUESTION_CHARS` | `2000` | Largo máximo de la pregunta (entero >= 1) |
+| `MAX_QUESTION_CHARS` | `2000` | Largo máximo de la pregunta y de cada mensaje `user` del historial (entero >= 1) |
+| `MAX_HISTORY_MESSAGES` | `20` | Mensajes de historial que acepta `POST /ask` (entero >= 0); la página manda los últimos 20 |
+| `MAX_ANSWER_CHARS` | `2000` | Largo máximo de la respuesta y de cada mensaje `assistant` del historial (entero >= 100) |
+| `MAX_BODY_BYTES` | `65536` | Tamaño máximo del cuerpo de una petición, en bytes (entero >= 1024) |
 | `EMPLOYEES_PATH` | `data/employees.json` | Datos; una ruta relativa se toma desde `product/` |
 | `SERVICE_NAME` | `hr-assistant` | Campo `service` del log |
 | `SLO_P95_MS` | `2000` | Meta del p95 de latencia en milisegundos (entero >= 1) |

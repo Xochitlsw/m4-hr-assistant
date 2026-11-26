@@ -14,7 +14,10 @@ def test_defaults_come_from_the_spec():
     settings = load_settings({})
     assert settings.models.provider == "fake"
     assert settings.agent_max_steps == 3
-    assert settings.max_question_chars == 2000
+    assert settings.limits.question_chars == 2000
+    assert settings.limits.history_messages == 20
+    assert settings.limits.answer_chars == 2000
+    assert settings.limits.body_bytes == 65536
     assert settings.employees_path == PRODUCT / "data" / "employees.json"
 
 
@@ -23,6 +26,9 @@ def test_invalid_values_stop_the_start_with_a_clear_message():
         ("AGENT_MAX_STEPS", "0"),
         ("AGENT_MAX_STEPS", "many"),
         ("MAX_QUESTION_CHARS", "-5"),
+        ("MAX_HISTORY_MESSAGES", "-1"),
+        ("MAX_ANSWER_CHARS", "99"),
+        ("MAX_BODY_BYTES", "1023"),
         ("MODEL_PROVIDER", "gpt"),
     ]
     for name, value in invalid:

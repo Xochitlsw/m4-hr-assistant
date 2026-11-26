@@ -4,6 +4,8 @@
 observabilidad y cliente HTTP) para que las pruebas inyecten las suyas.
 ``uvicorn app.main:app`` usa la aplicación armada con las variables de entorno del
 proceso. Antes de armar nada aplica las reglas de producción (``app.compliance``).
+Las entradas se validan antes de llegar al agente (tope del cuerpo y ``app.schemas``)
+y la respuesta del modelo se limpia antes de salir (``app.sanitize``; ADR 0013).
 """
 
 import os
@@ -11,7 +13,7 @@ import re
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import httpx
@@ -20,7 +22,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import APIKeyHeader
 
 from app import compliance
-from app.agent import Agent
+from app.agent import CAP_REACHED, Agent, AgentResult
+from app.body_limit import BodySizeLimit
 from app.catalog import build_models
 from app.clock import Clock, SystemClock
 from app.config import Settings, load_settings
@@ -30,6 +33,7 @@ from app.llm import ChatModel
 from app.logs import EventLogger
 from app.metrics import Metrics
 from app.routing import Router, apply_window
+from app.sanitize import sanitize_answer
 from app.schemas import AskResponse, build_ask_request
 from app.security import KeyStore, RateLimiter
 from app.tracing import Tracer
@@ -121,12 +125,17 @@ class AskService:
         self._models = dict(models)
         self._directory = directory
         self._max_steps = settings.agent_max_steps
+        self._max_answer_chars = settings.limits.answer_chars
         self._observability = observability
 
     def answer(
         self, question: str, history: list[dict], request_id: str, client: str
     ) -> AskResponse:
         """Responde una pregunta y deja su rastro sin guardar el texto ni la clave.
+
+        Audita cada herramienta (``tool_call``), cada respuesta del modelo fuera del
+        protocolo (``output_rejected``, con su motivo) y la limpieza de la respuesta
+        (``output_sanitized``, con los cambios); nunca el texto.
 
         :param question: Pregunta ya validada
         :type question: str
@@ -142,23 +151,19 @@ class AskService:
         """
         decision = self._router.choose(question)
         sent = apply_window(history, self._window)
-        log = self._observability.logger
-
-        def audit(tool: str, args: dict) -> None:
-            log.emit(
-                "audit",
-                request_id,
-                action="tool_call",
-                client=client,
-                tool=tool,
-                args=args,
-            )
-
+        on_tool_call, on_invalid_reply = self._auditors(request_id, client)
         agent = Agent(self._models[decision.model], self._directory, self._max_steps)
         metadata = {"client": client, "model": decision.model, "route": decision.route}
         with self._observability.tracer.request(request_id, **metadata):
-            result = agent.run(question, sent, on_tool_call=audit)
+            result = agent.run(
+                question,
+                sent,
+                on_tool_call=on_tool_call,
+                on_invalid_reply=on_invalid_reply,
+            )
+        result = self._clean(result, request_id, client)
         response = AskResponse.from_result(result, request_id, decision)
+        log = self._observability.logger
         log.emit(
             "agent_run",
             request_id,
@@ -180,6 +185,65 @@ class AskService:
         metrics.add_tokens(result.input_tokens, result.output_tokens)
         metrics.add_cost(result.usage.cost_usd)
         return response
+
+    def _auditors(
+        self, request_id: str, client: str
+    ) -> tuple[Callable[[str, dict], None], Callable[[str], None]]:
+        """Avisos del agente que van a la auditoría, sin texto de la conversación.
+
+        :param request_id: Id de la petición
+        :type request_id: str
+        :param client: Cliente autenticado
+        :type client: str
+        :return: ``(on_tool_call, on_invalid_reply)``: ``tool_call`` con la herramienta
+            y sus argumentos validados; ``output_rejected`` con el motivo
+        :rtype: tuple[Callable, Callable]
+        """
+        log = self._observability.logger
+
+        def tool_call(tool: str, args: dict) -> None:
+            log.emit(
+                "audit",
+                request_id,
+                action="tool_call",
+                client=client,
+                tool=tool,
+                args=args,
+            )
+
+        def output_rejected(reason: str) -> None:
+            log.emit(
+                "audit",
+                request_id,
+                action="output_rejected",
+                client=client,
+                reason=reason,
+            )
+
+        return tool_call, output_rejected
+
+    def _clean(self, result: AgentResult, request_id: str, client: str) -> AgentResult:
+        """Limpia la respuesta; si cambió algo, lo audita como ``output_sanitized``.
+
+        :param result: Resultado del agente
+        :type result: app.agent.AgentResult
+        :param request_id: Id de la petición
+        :type request_id: str
+        :param client: Cliente autenticado
+        :type client: str
+        :return: El mismo resultado con la respuesta limpia
+        :rtype: app.agent.AgentResult
+        """
+        clean = sanitize_answer(result.answer, self._max_answer_chars, CAP_REACHED)
+        if clean.changes:
+            self._observability.logger.emit(
+                "audit",
+                request_id,
+                action="output_sanitized",
+                client=client,
+                changes=list(clean.changes),
+            )
+        return replace(result, answer=clean.text)
 
 
 def _lifespan(client: httpx.Client | None) -> Callable:
@@ -310,7 +374,7 @@ def _add_routes(
 ) -> None:
     """Rutas de la API: página y salud sin clave; métricas y preguntas con clave."""
     require_client, limit_rate = access
-    ask_request = build_ask_request(settings.max_question_chars)
+    ask_request = build_ask_request(settings)
     page = PAGE.read_text(encoding="utf-8")
 
     @app.get("/", response_class=HTMLResponse, summary="HR Assistant web page")
@@ -389,6 +453,9 @@ def create_app(
         description="Answers questions about employees from the HR directory.",
         lifespan=_lifespan(owned_client),
     )
+    # Primero el tope del cuerpo: el middleware de observabilidad, que se agrega
+    # después, queda por fuera y le pone X-Request-ID y log también al 413.
+    app.add_middleware(BodySizeLimit, max_bytes=settings.limits.body_bytes)
     _add_observability(app, observability)
     access = _access_dependencies(settings, observability)
     _add_routes(app, settings, service, observability.metrics, access)

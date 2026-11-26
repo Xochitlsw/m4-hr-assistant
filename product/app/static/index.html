@@ -106,6 +106,9 @@
     // La clave solo vive en sessionStorage (se borra al cerrar la pestaña) y viaja en
     // el encabezado X-API-Key; nunca se escribe en el código de la página.
     const KEY_STORAGE = "hr-assistant.api-key";
+    // La API acepta hasta MAX_HISTORY_MESSAGES mensajes de historial (20 por omisión):
+    // la página manda solo los últimos 20 y olvida los más viejos.
+    const MAX_HISTORY = 20;
     const history = [];
     const form = document.getElementById("ask-form");
     const question = document.querySelector('[data-testid="question"]');
@@ -165,8 +168,12 @@
         return "Demasiadas preguntas; espera " + (retryAfter || "unos") + " segundos.";
       }
       if (status === 422) {
-        return "La pregunta está vacía o es demasiado larga. "
-          + "Revísala e intenta de nuevo.";
+        return "La pregunta está vacía, es demasiado larga o tiene caracteres no "
+          + "permitidos. Revísala e intenta de nuevo.";
+      }
+      if (status === 413) {
+        return "La conversación es demasiado larga. Recarga la página para empezar "
+          + "de nuevo.";
       }
       return "No pude obtener una respuesta. Intenta de nuevo en un momento.";
     }
@@ -200,6 +207,9 @@
         addMessage("assistant", data.answer, data.tools_used, data.request_id);
         history.push({ role: "user", content: text });
         history.push({ role: "assistant", content: data.answer });
+        if (history.length > MAX_HISTORY) {
+          history.splice(0, history.length - MAX_HISTORY);
+        }
       } catch (error) {
         addMessage("error", errorText(0));
       } finally {

@@ -1,41 +1,83 @@
-"""Modelos Pydantic de la API: cuerpo de ``POST /ask`` y su respuesta."""
+"""Modelos Pydantic de la API: cuerpo de ``POST /ask`` y su respuesta.
+
+El cuerpo se valida con los límites de la configuración (ADR 0013): largo de la
+pregunta, cantidad de mensajes del historial, largo de cada mensaje según su rol y
+ningún carácter prohibido (``app.sanitize``). Cualquier falla responde ``422``.
+"""
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    model_validator,
+)
 
 from app.agent import AgentResult
+from app.config import Settings
 from app.routing import RouteDecision
+from app.sanitize import has_forbidden_chars
 
 COST_DECIMALS = 8
 
 
-class Message(BaseModel):
-    """Un turno del historial que manda el cliente."""
+def reject_forbidden_chars(text: str) -> str:
+    """Validador: el texto no trae caracteres de control ni marcas bidireccionales.
 
-    model_config = ConfigDict(extra="forbid")
+    :param text: Pregunta o contenido de un mensaje
+    :type text: str
+    :return: El mismo texto
+    :rtype: str
+    :raises ValueError: Si trae alguno (Pydantic lo convierte en ``422``)
+    """
+    if has_forbidden_chars(text):
+        raise ValueError("text contains control or bidirectional characters")
+    return text
 
-    role: Literal["user", "assistant"]
-    content: str
 
+def build_ask_request(settings: Settings) -> type[BaseModel]:
+    """Crea el modelo del cuerpo de ``POST /ask`` con los límites configurados.
 
-def build_ask_request(max_question_chars: int) -> type[BaseModel]:
-    """Crea el modelo del cuerpo de ``POST /ask`` con el largo máximo configurado.
+    - ``question``: sin espacios al inicio ni al final, de 1 a ``question_chars``.
+    - ``history``: hasta ``history_messages`` mensajes. Cada mensaje ``user`` mide
+      como mucho ``question_chars`` y cada ``assistant``, ``answer_chars``: nada más
+      largo pudo salir de una conversación real con esta API.
 
-    La pregunta se valida sin espacios al inicio ni al final: vacía o más larga que
-    ``max_question_chars`` responde ``422``.
-
-    :param max_question_chars: Largo máximo de la pregunta
-    :type max_question_chars: int
+    :param settings: Configuración validada
+    :type settings: app.config.Settings
     :return: Clase Pydantic del cuerpo
     :rtype: type[pydantic.BaseModel]
     """
+    limits = settings.limits
+    role_limits = {"user": limits.question_chars, "assistant": limits.answer_chars}
     question_type = Annotated[
         str,
         StringConstraints(
-            strip_whitespace=True, min_length=1, max_length=max_question_chars
+            strip_whitespace=True, min_length=1, max_length=limits.question_chars
         ),
+        AfterValidator(reject_forbidden_chars),
     ]
+
+    class Message(BaseModel):
+        """Un turno del historial que manda el cliente."""
+
+        model_config = ConfigDict(extra="forbid")
+
+        role: Literal["user", "assistant"]
+        content: Annotated[str, AfterValidator(reject_forbidden_chars)]
+
+        @model_validator(mode="after")
+        def fits_its_role(self) -> "Message":
+            """El contenido no pasa del largo máximo de su rol."""
+            limit = role_limits[self.role]
+            if len(self.content) > limit:
+                raise ValueError(
+                    f"{self.role} messages must have at most {limit} characters"
+                )
+            return self
 
     class AskRequest(BaseModel):
         """Cuerpo de ``POST /ask``: la pregunta y el historial opcional."""
@@ -43,7 +85,9 @@ def build_ask_request(max_question_chars: int) -> type[BaseModel]:
         model_config = ConfigDict(extra="forbid")
 
         question: question_type
-        history: list[Message] = Field(default_factory=list)
+        history: list[Message] = Field(
+            default_factory=list, max_length=limits.history_messages
+        )
 
     return AskRequest
 

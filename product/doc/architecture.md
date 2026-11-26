@@ -24,6 +24,7 @@ Decisiones:
 - [ADR 0010](adr/0010-api-keys-and-rate-limit.md): clave por cliente y límite de peticiones.
 - [ADR 0011](adr/0011-compliance-as-code.md): compliance como código.
 - [ADR 0012](adr/0012-container-ci-and-render.md): contenedor, CI encadenado y Blueprint de Render.
+- [ADR 0013](adr/0013-input-and-output-validation.md): validación de entradas y de salidas.
 
 ## Componentes
 
@@ -32,10 +33,12 @@ flowchart LR
   user(["Personal de RH"]) --> page["Página web<br/>static/index.html · clave en sessionStorage"]
   page -- "POST /ask + X-API-Key" --> mw["Middleware de petición<br/>request_id · latencia · 500"]
   ops(["Soporte / plataforma"]) -- "GET /health · GET /metrics" --> mw
-  mw --> auth["require_client · limit_rate<br/>main.py + security.py · 401 / 429"]
+  mw --> limit["Tope del cuerpo<br/>body_limit.py · 413"]
+  limit --> auth["require_client · limit_rate<br/>main.py + security.py · 401 / 429"]
   auth --> api["Rutas<br/>main.py · AskService"]
   api -- "pregunta" --> router["Router<br/>routing.py · palancas 1 y 2"]
-  api --> agent["Agente<br/>agent.py · bucle con tope"]
+  api --> agent["Agente<br/>agent.py · bucle con tope · argumentos validados"]
+  api -- "respuesta" --> clean["sanitize.py<br/>quita controles y HTML · recorta"]
   catalog["catalog.py<br/>arma los dos modelos"] -. "al arrancar" .-> priced
   agent -- "complete(messages)" --> priced["PricedModel<br/>pricing.py · costo por llamada"]
   priced --> fake["FakeModel x2<br/>MODEL_PROVIDER=fake"]
@@ -45,7 +48,7 @@ flowchart LR
   dir --> data[("data/employees.json")]
   mw -- "request · error" --> logs["EventLogger<br/>logs.py"]
   auth -- "audit: auth_failed · rate_limited" --> logs
-  api -- "audit: tool_call · agent_run" --> logs
+  api -- "audit: tool_call · output_rejected · output_sanitized · agent_run" --> logs
   logs --> stdout[/"stdout: una línea JSON por evento"/]
   mw -- "latencia · status" --> metrics["Metrics<br/>metrics.py"]
   api -- "tokens · costo" --> metrics
@@ -60,8 +63,10 @@ flowchart LR
 | `app/security.py` | `KeyStore` (cliente de una clave con `hmac.compare_digest`) y `RateLimiter` (ventana deslizante por cliente) |
 | `app/compliance.py` | Reglas de producción: con `ENVIRONMENT=production` la aplicación no arranca si alguna falla |
 | `app/routing.py` | Regla de enrutamiento (modelo y `route`) y ventana de historial |
-| `app/schemas.py` | Modelos Pydantic de la API: historial, cuerpo de `/ask` y `AskResponse` |
-| `app/agent.py` | Bucle con tope, protocolo JSON, lista blanca, consumo (`Usage`) y aviso por herramienta |
+| `app/schemas.py` | Modelos Pydantic de la API: cuerpo de `/ask` con sus límites (largo de la pregunta, mensajes del historial y largo por rol, sin caracteres prohibidos) y `AskResponse` |
+| `app/body_limit.py` | Middleware ASGI: `413` si el cuerpo pasa de `MAX_BODY_BYTES`, por `Content-Length` o contando mientras llega |
+| `app/sanitize.py` | Caracteres prohibidos en la entrada (controles y marcas bidireccionales) y limpieza de la respuesta (controles, HTML, largo) |
+| `app/agent.py` | Bucle con tope, protocolo JSON, lista blanca, argumentos validados y normalizados (`EMP-0000`, departamentos de los datos), consumo (`Usage`) y avisos por herramienta y por respuesta rechazada |
 | `app/catalog.py` | Arma el modelo pequeño y el grande (simulados o reales) envueltos en `PricedModel`, y valida sus precios |
 | `app/llm.py` | Interfaz `complete(messages)`, `Completion` y `FakeModel` |
 | `app/gateway.py` | Workers AI vía AI Gateway: petición, tope de salida, caché, `usage`, adaptador al protocolo y `ModelUnavailable` |
@@ -91,8 +96,11 @@ sequenceDiagram
   participant L as Log (stdout)
   P->>W: POST /ask {question, history} + X-API-Key [X-Request-ID]
   W->>W: request_id y hora de inicio
+  W->>W: tope del cuerpo (MAX_BODY_BYTES)
   W->>S: require_client(X-API-Key)
-  alt sin clave o clave inválida
+  alt cuerpo de más
+    W-->>P: 413 request body too large
+  else sin clave o clave inválida
     S->>L: audit auth_failed (sin la clave)
     S-->>P: 401 invalid or missing API key
   else cliente sobre su límite
@@ -100,10 +108,12 @@ sequenceDiagram
     S-->>P: 429 rate limit exceeded + Retry-After
   else permitido
     S->>A: cliente
-    A->>A: valida (422), enruta, recorta historial
+    A->>A: valida (422: largo, historial, caracteres), enruta, recorta historial
     A->>G: run(question, history) con el modelo elegido
     G->>M: complete(messages) hasta AGENT_MAX_STEPS
-    G->>L: audit tool_call (client, tool, args)
+    G->>L: audit tool_call (args validados) u output_rejected (motivo)
+    A->>A: limpia la respuesta (controles, HTML, MAX_ANSWER_CHARS)
+    A->>L: audit output_sanitized si cambió algo (sin el texto)
     A->>L: agent_run (client, conteos, model, route, cost_usd; sin texto)
     A-->>W: AskResponse (answer, ..., request_id, model, route, cached_calls, cost_usd)
   end
@@ -175,7 +185,10 @@ El límite por cliente (ADR 0010) también acota el gasto.
 | `RATE_LIMIT_PER_MINUTE` | `30` | Entero >= 1; peticiones a `/ask` por cliente por minuto |
 | `MODEL_PROVIDER` | `fake` | `fake` o `gateway`; en producción, `gateway` |
 | `AGENT_MAX_STEPS` | `3` | Entero >= 1 |
-| `MAX_QUESTION_CHARS` | `2000` | Entero >= 1 |
+| `MAX_QUESTION_CHARS` | `2000` | Entero >= 1; también tope de cada mensaje `user` del historial |
+| `MAX_HISTORY_MESSAGES` | `20` | Entero >= 0 |
+| `MAX_ANSWER_CHARS` | `2000` | Entero >= 100; tope de la respuesta y de cada mensaje `assistant` del historial |
+| `MAX_BODY_BYTES` | `65536` | Entero >= 1024 |
 | `EMPLOYEES_PATH` | `data/employees.json` | Relativa a `product/`; el archivo debe existir y ser JSON válido |
 | `SERVICE_NAME` | `hr-assistant` | Campo `service` del log |
 | `SLO_P95_MS` | `2000` | Entero >= 1; meta del p95 en milisegundos |
@@ -207,6 +220,8 @@ incluye un secreto. `product/.env.example` lista todas las variables con los sec
 - **Acotado**: como máximo `AGENT_MAX_STEPS` llamadas al modelo por pregunta, cada una con tope de salida y
   timeout, una ventana de historial fija y un límite de peticiones por cliente.
 - **Mínima agencia**: dos herramientas de solo lectura, validadas antes de ejecutarse y auditadas.
+- **Entradas acotadas, salidas limpias**: el cuerpo, el historial y cada mensaje tienen tope; la respuesta sale
+  sin caracteres de control ni HTML y con largo máximo (ADR 0013).
 - **Acceso controlado**: clave por cliente comparada en tiempo constante; la clave nunca se registra.
 - **Rastreable sin exponer datos**: el log y las trazas por omisión no llevan el texto de preguntas ni respuestas.
 - **Costo visible**: cada respuesta y `/metrics` dicen cuánto costó.

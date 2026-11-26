@@ -19,6 +19,9 @@ DEFAULTS = {
     "MODEL_PROVIDER": "fake",
     "AGENT_MAX_STEPS": "3",
     "MAX_QUESTION_CHARS": "2000",
+    "MAX_HISTORY_MESSAGES": "20",
+    "MAX_ANSWER_CHARS": "2000",
+    "MAX_BODY_BYTES": "65536",
     "EMPLOYEES_PATH": "data/employees.json",
     "SERVICE_NAME": "hr-assistant",
     "SLO_P95_MS": "2000",
@@ -45,6 +48,9 @@ DEFAULTS = {
 BOOLEANS = {"true": True, "false": False}
 GATEWAY_VARIABLES = ("CF_ACCOUNT_ID", "CF_GATEWAY_ID", "CF_API_TOKEN")
 ENVIRONMENTS = ("development", "production")
+# Que quepan los textos seguros del agente y la marca de recorte (ADR 0013).
+MIN_ANSWER_CHARS = 100
+MIN_BODY_BYTES = 1024
 
 
 class ConfigError(ValueError):
@@ -174,13 +180,35 @@ class SecuritySettings:
 
 
 @dataclass(frozen=True)
+class LimitSettings:
+    """Topes de lo que entra y sale de ``POST /ask`` (ADR 0013).
+
+    :param question_chars: Largo máximo de la pregunta y de cada mensaje ``user`` del
+        historial
+    :type question_chars: int
+    :param history_messages: Mensajes del historial que acepta ``POST /ask``
+    :type history_messages: int
+    :param answer_chars: Largo máximo de la respuesta y de cada mensaje ``assistant``
+        del historial
+    :type answer_chars: int
+    :param body_bytes: Tamaño máximo del cuerpo de una petición, en bytes
+    :type body_bytes: int
+    """
+
+    question_chars: int
+    history_messages: int
+    answer_chars: int
+    body_bytes: int
+
+
+@dataclass(frozen=True)
 class Settings:
     """Configuración validada del producto.
 
     :param agent_max_steps: Tope de vueltas del bucle del agente
     :type agent_max_steps: int
-    :param max_question_chars: Largo máximo de la pregunta
-    :type max_question_chars: int
+    :param limits: Topes de la pregunta, el historial, la respuesta y el cuerpo
+    :type limits: LimitSettings
     :param employees_path: Ruta absoluta del archivo de empleados
     :type employees_path: pathlib.Path
     :param observability: Configuración del log, las métricas y las trazas
@@ -194,7 +222,7 @@ class Settings:
     """
 
     agent_max_steps: int
-    max_question_chars: int
+    limits: LimitSettings
     employees_path: Path
     observability: ObservabilitySettings
     models: ModelSettings
@@ -386,6 +414,16 @@ def _security(env: Mapping[str, str]) -> SecuritySettings:
     )
 
 
+def _limits(env: Mapping[str, str]) -> LimitSettings:
+    """Topes de entradas y salidas; ver :class:`LimitSettings`."""
+    return LimitSettings(
+        question_chars=_integer(env, "MAX_QUESTION_CHARS", 1),
+        history_messages=_integer(env, "MAX_HISTORY_MESSAGES", 0),
+        answer_chars=_integer(env, "MAX_ANSWER_CHARS", MIN_ANSWER_CHARS),
+        body_bytes=_integer(env, "MAX_BODY_BYTES", MIN_BODY_BYTES),
+    )
+
+
 def load_settings(env: Mapping[str, str] | None = None) -> Settings:
     """Arma la configuración desde las variables de entorno.
 
@@ -402,7 +440,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         raise ConfigError(f"MODEL_PROVIDER must be one of: {allowed}; got {provider!r}")
     return Settings(
         agent_max_steps=_integer(env, "AGENT_MAX_STEPS", 1),
-        max_question_chars=_integer(env, "MAX_QUESTION_CHARS", 1),
+        limits=_limits(env),
         employees_path=_path(env, "EMPLOYEES_PATH"),
         observability=_observability(env),
         models=_models(env, provider),
