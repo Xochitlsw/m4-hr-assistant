@@ -50,9 +50,13 @@ producción faltaba:
 - En LangSmith, el tablero se arma con los metadatos (`doc/observability.md`).
 
 **Correlación con el AI Gateway:** cada llamada al modelo real manda `cf-aig-metadata` con el `request_id` (una
-variable de contexto que fija `AskService`), para encontrar la llamada en los registros del gateway. El nombre y el
-formato del encabezado siguen la documentación de Cloudflare: se confirman en la fase final, en los registros del
-gateway.
+variable de contexto que fija `AskService`), para encontrar la llamada en los registros del gateway. El formato
+quedó confirmado en la documentación de Cloudflare (`ai-gateway/configuration/custom-metadata`, 2026-11-26):
+- Es un objeto JSON de hasta 5 entradas.
+- Sus valores son texto, número o booleano.
+- Ninguna clave puede empezar con `cf.`.
+
+El producto manda una sola entrada: `request_id`.
 
 **Runbook:** `doc/observability.md` responde qué pasó con una petición, por qué sube el costo, por qué hay `502`,
 `503` o `429` y si hay un ataque, con umbrales de alerta.

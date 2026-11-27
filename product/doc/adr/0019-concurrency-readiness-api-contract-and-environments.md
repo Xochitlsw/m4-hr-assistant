@@ -29,7 +29,8 @@ pero:
 - Evidencia: `scripts/load_test.py`, con un solo `AsyncClient` y un semáforo, mide códigos, peticiones por segundo
   y p50/p95/máximo. Contra uvicorn local con el modelo simulado: 200 de 200 con 20 a la vez, sin errores y con
   el log íntegro (`doc/evidence/load-test.txt`). Con el límite por omisión, el `429` protege al servicio. Contra
-  Render, una corrida corta en la fase final.
+  Render (2026-11-26, plan gratuito, modelo real): 20 de 20 con 5 a la vez, p50 de 609 ms y p95 de 3362 ms
+  (`doc/evidence/load-test-render.txt`).
 
 **`/health` y `/ready` son cosas distintas.**
 

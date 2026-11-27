@@ -81,8 +81,18 @@ flowchart TB
 Ver `product/README.md`: requisitos, instalación (PowerShell y Bash), variables de entorno,
 ejecución local con el modelo simulado y el real, Docker, despliegue en Render y pruebas.
 
-URL pública: <URL pública> (el plan gratuito de Render duerme el servicio tras 15 minutos; la primera petición
-tarda hasta un minuto). `GET /health`, `GET /docs` (Swagger con **Authorize**) y `GET /ready` no piden clave.
+URL pública: https://m4-hr-assistant.onrender.com (el plan gratuito de Render duerme el servicio tras 15 minutos; la primera
+petición tarda hasta un minuto). `GET /health`, `GET /docs` (Swagger con **Authorize**) y `GET /ready` no piden
+clave.
+
+Resultados en producción (2026-11-26; detalle en `product/doc/evidence/README.md`):
+
+- **Prueba de humo de la fábrica:** `[OK]` en sus 3 casos (`smoke-production.txt`).
+- **Carga:** 20 de 20 peticiones con 5 a la vez; p50 de 609 ms y p95 de 3362 ms (`load-test-render.txt`).
+- **Seguridad:** 13 de 13 ataques (`security-check-render.txt`) y la comprobación de origen del ADR 0017.
+- **`/metrics` de producción:** `error_rate` 0 y `cache_hit_rate` de 22 % (`metrics-render.json`).
+- **Capturas** de Render (Live y Logs), Actions con los seis trabajos en verde, `/docs`, `/dashboard`, LangSmith
+  y el AI Gateway: `product/doc/evidence/capturas/`.
 
 ## Observabilidad
 
@@ -93,10 +103,14 @@ tarda hasta un minuto). `GET /health`, `GET /docs` (Swagger con **Authorize**) y
     tokens de cada llamada. El texto va redactado.
   - Corrida con el modelo real (2026-11-26, `product/doc/evidence/langsmith-local.txt`):
     - La pregunta simple va al modelo de 8B.
-    - La que pide comparar va al de 70B y usa tres herramientas.
+    - La que pide comparar va al de 70B; necesita tres herramientas y llega al tope de pasos (ver
+      «Limitaciones conocidas»).
     - La que trae una CURP sintética llega redactada a la traza.
     - La inyección responde `400`.
-  - Capturas: `langsmith-trace.png` y `langsmith-dashboard.png`.
+  - Capturas (`product/doc/evidence/capturas/`):
+    - `langsmith-trace.png`: árbol de producción con la CURP como `[REDACTED:CURP]`.
+    - `render-logs-request-id.png`: Render Logs filtrado por el mismo `request_id`.
+    - `langsmith-dashboard.png` y `dashboard.png`.
 - **Logs:** una línea JSON por evento con `request_id`, nivel, entorno y versión, y 13 acciones de auditoría. No
   llevan texto de las personas, claves ni IP. La cabecera `X-Request-ID` va en toda respuesta.
 - **Métricas:**
@@ -149,6 +163,12 @@ costo: `product/doc/cost-analysis.md`.
 Defensa en capas: lo que una capa no detiene, lo contiene la siguiente. Detalle, modelo de amenazas, matriz de
 mínimo privilegio y rotación de secretos: `product/doc/security.md`.
 
+En producción (2026-11-26):
+
+- `security_check.py` dio 13 de 13 contra el servicio publicado.
+- La comprobación de origen del ADR 0017 quedó confirmada: con un equipo bloqueado por claves equivocadas, otra red
+  recibe `401`. El límite bloquea solo al origen que falla.
+
 | # | Control | Riesgo (OWASP LLM 2025) | Evidencia |
 | --- | --- | --- | --- |
 | 1 | Validación de entradas: cuerpo, largo, historial, caracteres invisibles | LLM01, LLM10 | `security-check.txt`; `tests/test_validation.py` |
@@ -183,6 +203,12 @@ mínimo privilegio y rotación de secretos: `product/doc/security.md`.
 
 - Métricas, límites, presupuesto y circuitos viven en la memoria de cada proceso: con varias réplicas no se suman.
 - El plan gratuito de Render duerme el servicio, y las métricas se reinician con cada arranque.
+- Con 5 peticiones simultáneas en el plan gratuito, el p95 sube a 3.4 s. El dashboard marcó 2016 ms frente al SLO
+  de 2000 ms.
+- Una pregunta que necesita 3 herramientas o más llega al tope de 3 pasos (`AGENT_MAX_STEPS`) y recibe el mensaje
+  de tope. Es un control de costo (OWASP LLM10); en producción se puede subir hasta 5.
+- Con historial de conversación y un dato redactado, el modelo de 8B a veces responde sin consultar el
+  directorio. En una prueba inventó el puesto de EMP-0005.
 - La API autentica clientes, no personas (no hay SSO).
 - Los detectores de datos personales e inyección son por patrones; las capas siguientes contienen lo que pase.
 - El set de evaluación no tiene preguntas complejas: no mide el enrutamiento en ellas.
@@ -194,6 +220,7 @@ mínimo privilegio y rotación de secretos: `product/doc/security.md`.
 - Guardar solo el hash de las claves de cliente.
 - Preguntas complejas y de seguimiento en el set de evaluación.
 - Usar el nombre del modelo pequeño que lista la tabla de precios vigente.
+- Exigir que toda respuesta que mencione un `EMP-0000` venga de una herramienta de esa misma petición.
 
 **Decisiones de diseño relevantes:** ver «Decisiones clave» y los 22 ADR de `product/doc/adr/`.
 

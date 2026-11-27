@@ -66,7 +66,16 @@ presupuesto agotado.
   réplicas, cada uno cuenta por su lado y se reinician al reiniciar. Para compartirlos haría falta un almacén
   como Redis; queda como mejora.
 
-## Comprobación en producción (fase final)
+## Comprobación en producción
+
+**Resultado (2026-11-26):** pasos 1 y 2 confirmados en producción.
+
+- `security_check.py` terminó con `429` para el equipo de la persona
+  (`doc/evidence/security-check-render.txt`, 13 de 13).
+- Justo después, una pregunta sin clave desde un celular en otra red recibió `401` («Clave inválida»).
+- Render agrega la IP real al final de `X-Forwarded-For`, como supone `TRUSTED_PROXY_HOPS=1`.
+
+Procedimiento:
 
 1. Desde tu equipo: `scripts/security_check.py <url>` termina mandando claves equivocadas y debe recibir `429`.
 2. Justo después, desde otra red (por ejemplo, el celular con datos móviles), una petición sin clave debe recibir

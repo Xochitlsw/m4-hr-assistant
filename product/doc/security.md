@@ -132,8 +132,13 @@ soporte» de la página) en el log; para seguir un origen sospechoso dentro de u
 - `uv run python -m verification unit`: todas las pruebas de los controles (el número de prueba de cada uno está
   en la tabla de la sección 3).
 - `uv run python scripts/security_check.py <url>`, con la clave en `SMOKE_API_KEY` leída sin eco: 13 casos de
-  ataque contra el servicio. Contra el producto local: `evidence/security-check.txt`, 13 de 13. Contra Render, en
-  la fase final, junto con la comprobación del origen del ADR 0017.
+  ataque contra el servicio.
+  - Contra el producto local: `evidence/security-check.txt`, 13 de 13.
+  - Contra producción (`https://m4-hr-assistant.onrender.com`, 2026-11-26): `evidence/security-check-render.txt`, 13 de 13.
+- Comprobación de origen del ADR 0017, hecha en producción el 2026-11-26. Con el equipo de la persona bloqueado
+  (`429`), una pregunta sin clave desde otra red recibió `401`: el límite de claves fallidas bloquea solo al origen
+  que falla.
+- Prueba de humo de la fábrica contra producción: `[OK]` en sus 3 casos (`evidence/smoke-production.txt`).
 - CI: `security` (pip-audit y gitleaks), `docker` (usuario, dependencias, escritura negada, `HEALTHCHECK`, prueba
   de humo) y `factory` (las verificaciones de la fábrica).
 

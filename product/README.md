@@ -42,6 +42,9 @@ flowchart LR
 - **Listo para producción**: compliance como código, resiliencia del modelo, contenedor sin privilegios, CI con
   seis trabajos y Blueprint de Render que publica solo con el CI en verde.
 
+**En producción:** <https://m4-hr-assistant.onrender.com>. El plan gratuito duerme el servicio tras 15 minutos: la primera petición tarda hasta
+un minuto. Los resultados medidos ahí están en «Despliegue».
+
 | Tema | Documento |
 | --- | --- |
 | Arquitectura, flujo y despliegue | [`doc/architecture.md`](doc/architecture.md) y [`doc/adr/`](doc/adr/) (22 decisiones) |
@@ -394,7 +397,8 @@ La corrida con el modelo real del 2026-11-26 está en
 [`doc/evidence/langsmith-local.txt`](doc/evidence/langsmith-local.txt). Sus cuatro casos:
 
 - La pregunta simple va al modelo de 8B.
-- La que pide comparar va al de 70B (`keyword:compara`).
+- La que pide comparar va al de 70B (`keyword:compara`). Necesita tres herramientas y llega al tope de pasos (ver
+  «Limitaciones»).
 - La pregunta con una CURP sintética responde con el dato redactado en la traza.
 - La inyección responde `400`.
 
@@ -459,6 +463,18 @@ casos; deja tu origen bloqueado un minuto al final, a propósito). Detalle en `d
 Imprime `[OK]` o `[FAIL]` para `/health` (200), `/ask` sin clave (401) y `/ask` con clave (200). El plan gratuito
 duerme el servicio tras 15 minutos sin uso; la primera petición puede tardar hasta un minuto.
 
+Resultados en producción (2026-11-26; detalle en [`doc/evidence/README.md`](doc/evidence/README.md)):
+
+- **Prueba de humo de la fábrica:** `[OK]` en sus 3 casos.
+- **Seguridad:** 13 de 13 ataques con el resultado esperado.
+- **Carga:** 20 de 20 peticiones con 5 a la vez; p50 de 609 ms y p95 de 3362 ms.
+- **Observabilidad:** los 6 casos de la mezcla con su código. `/metrics` muestra `error_rate` 0, el desglose por
+  modelo y ruta, los contadores de seguridad y `cache_hit_rate` de 22 %.
+- **Comprobación de origen (ADR 0017):** con un equipo bloqueado por claves equivocadas, otra red recibe `401`, no
+  `429`. Render pone la IP real al final de `X-Forwarded-For`.
+- **Capturas** de Render, Actions, `/docs`, `/dashboard`, LangSmith y el AI Gateway:
+  [`doc/evidence/capturas/`](doc/evidence/capturas/).
+
 ## Pruebas
 
 Si cambias la API, regenera el contrato desde `product/` con `uv run python scripts/export_openapi.py`; la
@@ -491,6 +507,17 @@ Limitaciones conocidas:
   memoria de cada proceso. Con varias réplicas o `WEB_CONCURRENCY` > 1 no se suman (ADR 0017 y 0019).
 - **Plan gratuito de Render.** El servicio duerme tras 15 minutos sin uso: la primera petición tarda hasta un
   minuto. Las métricas se reinician con cada arranque.
+- **Latencia con concurrencia en el plan gratuito.** Con 5 peticiones simultáneas, el p95 sube a 3.4 s
+  (`doc/evidence/load-test-render.txt`). El dashboard marcó 2016 ms frente al SLO de 2000 ms.
+- **Tope de pasos del agente.** Una pregunta que necesita 3 herramientas o más llega al tope de 3 pasos
+  (`AGENT_MAX_STEPS`) y recibe «No pude completar la respuesta. Intenta con una pregunta más concreta.». Por
+  ejemplo, comparar a los empleados de un departamento: `stopped_at_step_cap` en
+  `doc/evidence/metrics-render.json`. Es un control de costo y de agencia (OWASP LLM10); en producción se puede
+  subir hasta 5.
+- **Respuestas sin consultar el directorio.** Con historial de conversación y un dato redactado en la pregunta,
+  el modelo de 8B a veces responde sin llamar a una herramienta. En una prueba en producción inventó el puesto,
+  el departamento y la fecha de ingreso de EMP-0005. Sin historial, la misma pregunta sí usa la herramienta
+  (`doc/evidence/capturas/langsmith-trace.png`).
 - **Autenticación de clientes, no de personas.** No hay SSO; una clave identifica a un cliente.
 - **Detectores por patrones.** Los datos personales y las inyecciones se detectan con reglas: lo que no tiene
   forma reconocible (un domicilio, una inyección parafraseada) puede pasar. Lo contienen las capas siguientes
@@ -509,3 +536,5 @@ Mejoras futuras:
 - Preguntas complejas y de seguimiento en el set de evaluación, y las palancas extra que aún no se midieron
   (`doc/cost-analysis.md` §8).
 - Cambiar el modelo pequeño al nombre que lista la tabla de precios.
+- Exigir que toda respuesta que mencione un `EMP-0000` venga del resultado de una herramienta de esa misma
+  petición, y rechazar o reintentar la que no.
