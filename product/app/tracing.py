@@ -1,18 +1,22 @@
-"""Trazas opcionales en LangSmith (ADR 0006).
+"""Trazas opcionales en LangSmith (ADR 0006 y 0014).
 
 Las trazas se encienden solo con ``LANGSMITH_TRACING=true`` y una clave presente. El
-cliente se crea con ``hide_inputs``/``hide_outputs`` y se pasa en el contexto de cada
-petición, para que ninguna traza use otro cliente. El producto nunca lee el valor de
-la clave: lo toma el cliente de LangSmith del entorno.
+cliente se crea según ``HIDE_INPUTS``/``HIDE_OUTPUTS``: ``true`` oculta esa dirección,
+``redact`` la manda redactada por ``app.privacy`` (como ``anonymizer``) y ``false`` la
+manda en claro (producción no lo acepta). El cliente se pasa en el contexto de cada
+petición, para que ninguna traza use otro. El producto nunca lee el valor de la clave:
+lo toma el cliente de LangSmith del entorno.
 """
 
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
-from langsmith import Client, traceable, tracing_context
+from langsmith import Client, get_current_run_tree, traceable, tracing_context
 
 from app.config import Settings
+from app.llm import Completion
+from app.privacy import redact_tree
 
 
 class Tracer:
@@ -50,12 +54,15 @@ class Tracer:
         observability = settings.observability
         if not observability.tracing_enabled:
             return cls()
-        return cls(
-            client_factory(
-                hide_inputs=observability.hide_inputs,
-                hide_outputs=observability.hide_outputs,
-            )
-        )
+        options = {
+            "hide_inputs": observability.hide_inputs,
+            "hide_outputs": observability.hide_outputs,
+        }
+        if observability.redacts:
+            # LangSmith aplica el anonymizer al JSON ya serializado de entradas,
+            # salidas, metadatos y errores; lo oculto sigue oculto (ADR 0014).
+            options["anonymizer"] = redact_tree
+        return cls(client_factory(**options))
 
     @contextmanager
     def request(self, request_id: str, **metadata: str) -> Iterator[None]:
@@ -75,7 +82,7 @@ class Tracer:
 
 
 def traced(
-    run_type: str, name: str, function: Callable[..., Any]
+    run_type: str, name: str, function: Callable[..., Any], **options: Any
 ) -> Callable[..., Any]:
     """Envuelve una función para que quede como traza si el contexto lo permite.
 
@@ -85,7 +92,46 @@ def traced(
     :type name: str
     :param function: Función a envolver
     :type function: Callable[..., Any]
+    :param options: ``metadata``, ``tags`` o ``process_outputs`` de ``traceable``
+    :type options: Any
     :return: La función envuelta; sin trazas encendidas se comporta igual
     :rtype: Callable[..., Any]
     """
-    return traceable(run_type=run_type, name=name)(function)
+    return traceable(run_type=run_type, name=name, **options)(function)
+
+
+def annotate(**metadata: Any) -> None:
+    """Agrega metadatos a la traza en curso; sin traza, no hace nada.
+
+    Sirve para lo que se sabe al final (modelo, ruta, costo), que no estaba al abrir la
+    traza.
+
+    :param metadata: Metadatos a agregar
+    :type metadata: Any
+    """
+    run = get_current_run_tree()
+    if run is not None:
+        run.add_metadata(metadata)
+
+
+def completion_outputs(completion: Completion) -> dict:
+    """Salida de una llamada al modelo para LangSmith, con ``usage_metadata``.
+
+    LangSmith toma ``usage_metadata`` para mostrar tokens y costo de la llamada.
+
+    :param completion: Respuesta del modelo
+    :type completion: app.llm.Completion
+    :return: Texto, uso de tokens, caché, costo e intentos
+    :rtype: dict
+    """
+    return {
+        "text": completion.text,
+        "usage_metadata": {
+            "input_tokens": completion.input_tokens,
+            "output_tokens": completion.output_tokens,
+            "total_tokens": completion.input_tokens + completion.output_tokens,
+        },
+        "cached": completion.cached,
+        "cost_usd": completion.cost_usd,
+        "attempts": completion.attempts,
+    }

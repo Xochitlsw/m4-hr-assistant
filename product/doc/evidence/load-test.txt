@@ -1,0 +1,24 @@
+# scripts/load_test.py contra el producto local (2026-11-26)
+# uvicorn con 1 proceso, MODEL_PROVIDER=fake y una clave de ejemplo (no es un secreto).
+# El modelo simulado responde en milisegundos: esto mide la API (validación, seguridad,
+# agente y log) y su concurrencia, no al modelo real.
+
+## 1) Concurrencia: límite alto, 200 peticiones con 20 a la vez
+$ uv run python scripts/load_test.py <url> --requests 200 --concurrency 20
+Peticiones: 200 con 20 a la vez en 1.402 s (142.6 por segundo)
+Por código: 200: 200
+Errores de red: 0
+Latencia: p50 128.8 ms, p95 190.4 ms, máxima 222.0 ms
+(código de salida 0)
+/metrics del proceso: requests=200, error_rate=0.0, p50=85.27 ms, p95=135.388 ms
+Log: 603 líneas JSON, 200 eventos request de /ask, ninguna con la clave: True
+
+## 2) Protección: límite por omisión (30 por minuto por cliente), 60 peticiones con 10 a la vez
+$ uv run python scripts/load_test.py <url> --requests 60 --concurrency 10
+Peticiones: 60 con 10 a la vez en 0.594 s (100.9 por segundo)
+Por código: 200: 30, 429: 30
+Errores de red: 0
+Latencia: p50 54.6 ms, p95 185.6 ms, máxima 291.6 ms
+(código de salida 0)
+/metrics del proceso: requests=60, error_rate=0.0, p50=27.855 ms, p95=69.028 ms
+Log: 153 líneas JSON, 60 eventos request de /ask, ninguna con la clave: True

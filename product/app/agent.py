@@ -2,8 +2,10 @@
 
 En cada paso el modelo pide una herramienta (``{"tool", "args"}``) o responde
 (``{"answer"}``). Solo se ejecutan las herramientas de la lista blanca, con sus
-argumentos validados; una respuesta fuera del protocolo consume un paso y se le
-devuelve al modelo como error.
+argumentos validados y normalizados (ADR 0013): ``employee_id`` con la forma
+``EMP-0000`` y ``department`` entre los departamentos de los datos. Una respuesta
+fuera del protocolo consume un paso, se le devuelve al modelo como error (sin repetir
+lo que escribió) y se avisa con su motivo en ``on_invalid_reply``.
 
 La corrida, cada llamada al modelo y cada herramienta quedan como trazas cuando el
 contexto de la petición las enciende (``app.tracing``). El agente no sabe de logs ni
@@ -11,14 +13,18 @@ de ``request_id``: avisa de cada herramienta ejecutada con ``on_tool_call``.
 """
 
 import json
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-from app.directory import EmployeeDirectory
+from app.directory import EmployeeDirectory, normalize
 from app.llm import TOOL_RESULT_PREFIX, ChatModel, Completion
-from app.tracing import traced
+from app.tracing import completion_outputs, traced
 
 ToolCallback = Callable[[str, dict], None]
+InvalidReplyCallback = Callable[[str], None]
+# [0-9] y no \d: en Python \d acepta dígitos de cualquier alfabeto.
+EMPLOYEE_ID_FORMAT = re.compile(r"EMP-[0-9]{4}")
 
 CAP_REACHED = "No pude completar la respuesta. Intenta con una pregunta más concreta."
 SYSTEM_PROMPT = (
@@ -44,12 +50,15 @@ class Usage:
     :type cached_calls: int
     :param cost_usd: Costo en USD (las cacheadas no cuestan)
     :type cost_usd: float
+    :param retries: Reintentos que hicieron falta en todas las llamadas
+    :type retries: int
     """
 
     input_tokens: int = 0
     output_tokens: int = 0
     cached_calls: int = 0
     cost_usd: float = 0.0
+    retries: int = 0
 
     def add(self, completion: Completion) -> "Usage":
         """Suma una llamada al modelo.
@@ -64,6 +73,7 @@ class Usage:
             output_tokens=self.output_tokens + completion.output_tokens,
             cached_calls=self.cached_calls + int(completion.cached),
             cost_usd=self.cost_usd + completion.cost_usd,
+            retries=self.retries + completion.attempts - 1,
         )
 
 
@@ -101,7 +111,19 @@ class AgentResult:
 
 
 class InvalidReply(ValueError):
-    """El modelo respondió algo fuera del protocolo."""
+    """El modelo respondió algo fuera del protocolo.
+
+    :param reason: Motivo corto para la auditoría (``not_json``, ``bad_shape``,
+        ``empty_answer``, ``unknown_tool``, ``bad_args``, ``bad_employee_id`` o
+        ``unknown_department``)
+    :type reason: str
+    :param message: Explicación para el modelo, sin repetir lo que escribió
+    :type message: str
+    """
+
+    def __init__(self, reason: str, message: str):
+        super().__init__(message)
+        self.reason = reason
 
 
 class Agent:
@@ -113,19 +135,38 @@ class Agent:
     :type directory: EmployeeDirectory
     :param max_steps: Tope de llamadas al modelo por pregunta
     :type max_steps: int
+    :param model_metadata: Metadatos de las trazas del modelo (``ls_model_name``,
+        ``ls_provider``)
+    :type model_metadata: dict | None
     """
 
-    def __init__(self, model: ChatModel, directory: EmployeeDirectory, max_steps: int):
+    def __init__(
+        self,
+        model: ChatModel,
+        directory: EmployeeDirectory,
+        max_steps: int,
+        model_metadata: dict | None = None,
+    ):
         self._directory = directory
         self._max_steps = max_steps
-        self._complete = traced("llm", "model", model.complete)
+        self._departments = {normalize(name): name for name in directory.departments()}
+        self._complete = traced(
+            "llm",
+            "model",
+            model.complete,
+            metadata=model_metadata,
+            process_outputs=completion_outputs,
+        )
+        # nombre -> (argumento, validador que normaliza, herramienta)
         self._tools = {
             "get_employee": (
                 "employee_id",
+                self._valid_employee_id,
                 traced("tool", "get_employee", self._get_employee),
             ),
             "search_by_department": (
                 "department",
+                self._valid_department,
                 traced("tool", "search_by_department", self._search_by_department),
             ),
         }
@@ -136,6 +177,7 @@ class Agent:
         question: str,
         history: Sequence[dict] = (),
         on_tool_call: ToolCallback | None = None,
+        on_invalid_reply: InvalidReplyCallback | None = None,
     ) -> AgentResult:
         """Responde una pregunta con el historial que manda el cliente.
 
@@ -143,16 +185,23 @@ class Agent:
         :type question: str
         :param history: Turnos previos con ``role`` y ``content``
         :type history: Sequence[dict]
-        :param on_tool_call: Se llama con ``(herramienta, argumentos)`` por cada
-            herramienta ejecutada (las rechazadas no cuentan)
+        :param on_tool_call: Se llama con ``(herramienta, argumentos normalizados)`` por
+            cada herramienta ejecutada (las rechazadas no cuentan)
         :type on_tool_call: Callable[[str, dict], None] | None
+        :param on_invalid_reply: Se llama con el motivo de cada respuesta del modelo
+            fuera del protocolo (por ejemplo ``bad_employee_id``), nunca con su texto
+        :type on_invalid_reply: Callable[[str], None] | None
         :return: Respuesta, pasos, herramientas usadas, tokens y motivo de parada
         :rtype: AgentResult
         """
-        return self._traced_run(question, list(history), on_tool_call)
+        callbacks = (on_tool_call, on_invalid_reply)
+        return self._traced_run(question, list(history), callbacks)
 
     def _run(
-        self, question: str, history: list[dict], on_tool_call: ToolCallback | None
+        self,
+        question: str,
+        history: list[dict],
+        callbacks: tuple[ToolCallback | None, InvalidReplyCallback | None],
     ) -> AgentResult:
         """Bucle con tope; ver :meth:`run`."""
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -165,9 +214,7 @@ class Agent:
         for step in range(1, self._max_steps + 1):
             completion = self._complete(messages)
             usage = usage.add(completion)
-            answer, tool_result = self._handle(
-                completion.text, tools_used, on_tool_call
-            )
+            answer, tool_result = self._handle(completion.text, tools_used, callbacks)
             if answer is not None:
                 return AgentResult(answer, step, tools_used, "answer", usage)
             messages.append({"role": "assistant", "content": completion.text})
@@ -177,49 +224,89 @@ class Agent:
         return AgentResult(CAP_REACHED, self._max_steps, tools_used, "max_steps", usage)
 
     def _handle(
-        self, text: str, tools_used: list[str], on_tool_call: ToolCallback | None
+        self,
+        text: str,
+        tools_used: list[str],
+        callbacks: tuple[ToolCallback | None, InvalidReplyCallback | None],
     ) -> tuple[str | None, str]:
         """Interpreta una respuesta del modelo.
 
         :return: ``(respuesta, "")`` si el modelo respondió, o ``(None, resultado)``
             con el resultado de la herramienta o el error del protocolo
         """
+        on_tool_call, on_invalid_reply = callbacks
         try:
             reply = self._parse(text)
         except InvalidReply as error:
+            if on_invalid_reply is not None:
+                on_invalid_reply(error.reason)
             return None, f"error: {error}"
         if "answer" in reply:
             return reply["answer"], ""
         name, args = reply["tool"], reply["args"]
-        argument_name, tool = self._tools[name]
+        argument_name, _, tool = self._tools[name]
         tools_used.append(name)
         if on_tool_call is not None:
             on_tool_call(name, dict(args))
         return None, tool(args[argument_name])
 
     def _parse(self, text: str) -> dict:
-        """Valida que la respuesta cumpla el protocolo y la lista blanca.
+        """Valida el protocolo, la lista blanca y los argumentos.
 
-        :raises InvalidReply: Si no es JSON, no es un objeto o no cumple el protocolo
+        :return: ``{"answer": ...}`` o ``{"tool": ..., "args": ...}`` con los
+            argumentos ya normalizados
+        :raises InvalidReply: Si algo no cumple; el mensaje no repite lo que escribió
+            el modelo
         """
         try:
             reply = json.loads(text)
         except ValueError as error:
-            raise InvalidReply("la respuesta no es JSON válido") from error
+            raise InvalidReply("not_json", "la respuesta no es JSON válido") from error
         if isinstance(reply, dict) and set(reply) == {"answer"}:
             if isinstance(reply["answer"], str):
+                if not reply["answer"].strip():
+                    raise InvalidReply("empty_answer", "la respuesta está vacía")
                 return reply
         if not isinstance(reply, dict) or set(reply) != {"tool", "args"}:
-            raise InvalidReply('responde solo {"tool", "args"} o {"answer"}')
+            raise InvalidReply(
+                "bad_shape", 'responde solo {"tool", "args"} o {"answer"}'
+            )
         name, args = reply["tool"], reply["args"]
         if not isinstance(name, str) or name not in self._tools:
-            raise InvalidReply(f"herramienta desconocida: {name}")
-        argument_name = self._tools[name][0]
+            known = ", ".join(self._tools)
+            raise InvalidReply("unknown_tool", f"herramienta desconocida; usa: {known}")
+        argument_name, validate, _ = self._tools[name]
         if not isinstance(args, dict) or set(args) != {argument_name}:
-            raise InvalidReply(f'{name} recibe solo {{"{argument_name}": "..."}}')
+            raise InvalidReply(
+                "bad_args", f'{name} recibe solo {{"{argument_name}": "..."}}'
+            )
         if not isinstance(args[argument_name], str):
-            raise InvalidReply(f"{argument_name} debe ser texto")
-        return reply
+            raise InvalidReply("bad_args", f"{argument_name} debe ser texto")
+        return {"tool": name, "args": {argument_name: validate(args[argument_name])}}
+
+    @staticmethod
+    def _valid_employee_id(value: str) -> str:
+        """``employee_id`` normalizado (``EMP-0004``) o :class:`InvalidReply`."""
+        employee_id = value.strip().upper()
+        if not EMPLOYEE_ID_FORMAT.fullmatch(employee_id):
+            raise InvalidReply(
+                "bad_employee_id", "employee_id debe tener la forma EMP-0000"
+            )
+        return employee_id
+
+    def _valid_department(self, value: str) -> str:
+        """Nombre del departamento tal como está en los datos, o :class:`InvalidReply`.
+
+        Se compara sin mayúsculas ni acentos. El error lista los departamentos que
+        existen, sin repetir el texto que mandó el modelo.
+        """
+        department = self._departments.get(normalize(value.strip()))
+        if department is None:
+            known = ", ".join(self._departments.values())
+            raise InvalidReply(
+                "unknown_department", f"departamento desconocido; usa uno de: {known}"
+            )
+        return department
 
     def _get_employee(self, employee_id: str) -> str:
         """Herramienta ``get_employee``: el empleado en JSON o un aviso."""

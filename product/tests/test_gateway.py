@@ -6,8 +6,8 @@ import httpx
 import pytest
 
 from app.config import load_settings
-from app.gateway import GatewayModel, ModelUnavailable, to_protocol
-from tests.conftest import GATEWAY_ENV, SMALL, FakeGateway
+from app.gateway import CURRENT_REQUEST_ID, GatewayModel, ModelUnavailable, to_protocol
+from tests.conftest import GATEWAY_ENV, LARGE, SMALL, FakeGateway
 
 MESSAGES = [{"role": "user", "content": "¿Quién es EMP-0004?"}]
 URL = (
@@ -27,7 +27,12 @@ def test_the_request_follows_the_gateway_contract():
     request = gateway.requests[0]
     assert (request.method, str(request.url)) == ("POST", URL)
     assert request.headers["Authorization"] == "Bearer test-only-token"
+    # El gateway exige su propia autenticación (Authenticated Gateway).
+    assert request.headers["cf-aig-authorization"] == "Bearer test-only-token"
+    # Sin TTL, la caché se salta aunque el gateway la tenga encendida en su panel.
+    assert request.headers["cf-aig-skip-cache"] == "true"
     assert "cf-aig-cache-ttl" not in request.headers
+    assert "cf-aig-cache-key" not in request.headers
     body = json.loads(request.content)
     assert body == {
         "model": SMALL,
@@ -43,9 +48,33 @@ def test_the_request_follows_the_gateway_contract():
 
 def test_the_cache_ttl_is_sent_and_a_hit_marks_the_call_as_cached():
     gateway = FakeGateway(cache_status="HIT")
-    model = gateway_model(gateway.client(), CACHE_TTL_SECONDS="3600")
+    model = gateway_model(gateway.client(), CACHE_TTL_SECONDS="300")
     assert model.complete(MESSAGES).cached is True
-    assert gateway.requests[0].headers["cf-aig-cache-ttl"] == "3600"
+    headers = gateway.requests[0].headers
+    assert headers["cf-aig-cache-ttl"] == "300"
+    assert len(headers["cf-aig-cache-key"]) == 64
+    assert "cf-aig-skip-cache" not in headers
+
+
+def cache_key(model_name, messages, request_id):
+    gateway = FakeGateway()
+    settings = load_settings({**GATEWAY_ENV, "CACHE_TTL_SECONDS": "300"})
+    model = GatewayModel(model_name, settings.models, gateway.client())
+    token = CURRENT_REQUEST_ID.set(request_id)
+    try:
+        model.complete(messages)
+    finally:
+        CURRENT_REQUEST_ID.reset(token)
+    return gateway.requests[0].headers["cf-aig-cache-key"]
+
+
+def test_the_cache_key_depends_on_the_request_body_and_not_on_the_request_id():
+    """Dos peticiones iguales comparten la caché aunque cada una tenga su id."""
+    first = cache_key(SMALL, MESSAGES, "request-1")
+    assert cache_key(SMALL, MESSAGES, "request-2") == first
+    other_question = [{"role": "user", "content": "¿Quién es EMP-0005?"}]
+    assert cache_key(SMALL, other_question, "request-1") != first
+    assert cache_key(LARGE, MESSAGES, "request-1") != first
 
 
 def test_any_gateway_failure_is_model_unavailable():

@@ -14,7 +14,10 @@ def test_defaults_come_from_the_spec():
     settings = load_settings({})
     assert settings.models.provider == "fake"
     assert settings.agent_max_steps == 3
-    assert settings.max_question_chars == 2000
+    assert settings.limits.question_chars == 2000
+    assert settings.limits.history_messages == 20
+    assert settings.limits.answer_chars == 2000
+    assert settings.limits.body_bytes == 65536
     assert settings.employees_path == PRODUCT / "data" / "employees.json"
 
 
@@ -23,6 +26,9 @@ def test_invalid_values_stop_the_start_with_a_clear_message():
         ("AGENT_MAX_STEPS", "0"),
         ("AGENT_MAX_STEPS", "many"),
         ("MAX_QUESTION_CHARS", "-5"),
+        ("MAX_HISTORY_MESSAGES", "-1"),
+        ("MAX_ANSWER_CHARS", "99"),
+        ("MAX_BODY_BYTES", "1023"),
         ("MODEL_PROVIDER", "gpt"),
     ]
     for name, value in invalid:
@@ -36,6 +42,18 @@ def test_observability_defaults_are_safe():
     assert observability.slo_p95_ms == 2000
     assert observability.tracing_enabled is False
     assert (observability.hide_inputs, observability.hide_outputs) == (True, True)
+    assert (observability.inputs_privacy, observability.outputs_privacy) == (
+        "hide",
+        "hide",
+    )
+
+
+def test_trace_privacy_accepts_hide_redact_or_clear():
+    modes = {"true": "hide", "redact": "redact", "REDACT": "redact", "false": "clear"}
+    for value, mode in modes.items():
+        observability = load_settings({"HIDE_OUTPUTS": value}).observability
+        assert observability.outputs_privacy == mode
+        assert observability.hide_outputs is (mode == "hide")
 
 
 def test_invalid_observability_values_stop_the_start():
@@ -91,10 +109,21 @@ def test_invalid_cost_values_stop_the_start():
         ("MODEL_TEMPERATURE", "3"),
         ("MODEL_TIMEOUT_SECONDS", "0"),
         ("CACHE_TTL_SECONDS", "-1"),
+        ("CACHE_TTL_SECONDS", "1"),
+        ("CACHE_TTL_SECONDS", "59"),
     ]
     for name, value in invalid:
         with pytest.raises(ConfigError, match=name):
             load_settings({name: value})
+
+
+def test_the_cache_ttl_is_off_or_at_least_the_gateway_minimum():
+    """AI Gateway guarda en caché de 60 s en adelante: 0 la salta."""
+    for value, expected in (("0", 0), ("60", 60), ("300", 300)):
+        settings = load_settings({"CACHE_TTL_SECONDS": value})
+        assert settings.models.gateway.cache_ttl_seconds == expected
+    with pytest.raises(ConfigError, match="0 .*or an integer >= 60"):
+        load_settings({"CACHE_TTL_SECONDS": "30"})
 
 
 def test_security_defaults_and_invalid_values():

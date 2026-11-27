@@ -1,0 +1,14 @@
+# Línea base contra palancas con el modelo simulado (C2), 2026-11-26
+# Comando, desde la raíz del repositorio: uv run python -m verification evaluate
+# Código de salida: 0
+# Línea base: ROUTING=false, HISTORY_WINDOW=1000 (modelo grande, historial completo).
+# Palancas: valores por omisión (enrutamiento, ventana de 6 mensajes, tope de 300).
+# Set: verification/eval_set.json, 8 preguntas con 10 mensajes de historial de relleno.
+# Se omiten las líneas de log de los dos servidores (uvicorn y JSON del producto).
+
+baseline  quality=100% cost_usd=0.001134 input_tokens=2416
+levers    quality=100% cost_usd=0.000156 input_tokens=1846
+[OK] evaluate
+
+# Resultado: misma calidad (100 %), 86.2 % menos costo y 23.6 % menos tokens de entrada.
+# Desglose por palanca: doc/evidence/cost-ablation.md (scripts/cost_ablation.py).

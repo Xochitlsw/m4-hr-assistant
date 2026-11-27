@@ -19,6 +19,9 @@ DEFAULTS = {
     "MODEL_PROVIDER": "fake",
     "AGENT_MAX_STEPS": "3",
     "MAX_QUESTION_CHARS": "2000",
+    "MAX_HISTORY_MESSAGES": "20",
+    "MAX_ANSWER_CHARS": "2000",
+    "MAX_BODY_BYTES": "65536",
     "EMPLOYEES_PATH": "data/employees.json",
     "SERVICE_NAME": "hr-assistant",
     "SLO_P95_MS": "2000",
@@ -36,15 +39,31 @@ DEFAULTS = {
     "MODEL_MAX_TOKENS": "300",
     "MODEL_TEMPERATURE": "0",
     "MODEL_TIMEOUT_SECONDS": "30",
+    "MODEL_CONNECT_TIMEOUT_SECONDS": "5",
+    "MODEL_MAX_RETRIES": "2",
+    "MODEL_RETRY_BACKOFF_SECONDS": "0.5",
+    "CIRCUIT_FAILURE_THRESHOLD": "5",
+    "CIRCUIT_OPEN_SECONDS": "30",
     "CACHE_TTL_SECONDS": "0",
     "PRICES_PATH": "data/model_prices.json",
     "ENVIRONMENT": "development",
     "API_KEYS": "",
     "RATE_LIMIT_PER_MINUTE": "30",
+    "AUTH_FAILURES_PER_MINUTE": "10",
+    "TRUSTED_PROXY_HOPS": "0",
+    "CLIENT_DAILY_BUDGET_USD": "1.0",
 }
 BOOLEANS = {"true": True, "false": False}
+# HIDE_INPUTS / HIDE_OUTPUTS: true oculta, redact redacta y false manda en claro
+# (ADR 0014).
+TRACE_PRIVACY = {"true": "hide", "redact": "redact", "false": "clear"}
 GATEWAY_VARIABLES = ("CF_ACCOUNT_ID", "CF_GATEWAY_ID", "CF_API_TOKEN")
 ENVIRONMENTS = ("development", "production")
+# Que quepan los textos seguros del agente y la marca de recorte (ADR 0013).
+MIN_ANSWER_CHARS = 100
+MIN_BODY_BYTES = 1024
+# AI Gateway no guarda en caché menos de 60 segundos (ADR 0022).
+MIN_CACHE_TTL_SECONDS = 60
 
 
 class ConfigError(ValueError):
@@ -61,10 +80,11 @@ class ObservabilitySettings:
     :type slo_p95_ms: int
     :param tracing_enabled: ``LANGSMITH_TRACING=true`` y la clave presente
     :type tracing_enabled: bool
-    :param hide_inputs: No mandar a LangSmith las entradas
-    :type hide_inputs: bool
-    :param hide_outputs: No mandar a LangSmith las salidas
-    :type hide_outputs: bool
+    :param inputs_privacy: Qué hacer con las entradas en LangSmith: ``hide``,
+        ``redact`` o ``clear``
+    :type inputs_privacy: str
+    :param outputs_privacy: Lo mismo para las salidas
+    :type outputs_privacy: str
     :param tracing_requested: ``LANGSMITH_TRACING=true``, haya o no clave (lo revisa
         compliance)
     :type tracing_requested: bool
@@ -73,9 +93,59 @@ class ObservabilitySettings:
     service_name: str
     slo_p95_ms: int
     tracing_enabled: bool
-    hide_inputs: bool
-    hide_outputs: bool
+    inputs_privacy: str
+    outputs_privacy: str
     tracing_requested: bool = False
+
+    @property
+    def hide_inputs(self) -> bool:
+        """Indica si las entradas no se mandan a LangSmith.
+
+        :return: ``True`` con ``HIDE_INPUTS=true``
+        :rtype: bool
+        """
+        return self.inputs_privacy == "hide"
+
+    @property
+    def hide_outputs(self) -> bool:
+        """Indica si las salidas no se mandan a LangSmith.
+
+        :return: ``True`` con ``HIDE_OUTPUTS=true``
+        :rtype: bool
+        """
+        return self.outputs_privacy == "hide"
+
+    @property
+    def redacts(self) -> bool:
+        """Indica si alguna dirección se manda redactada.
+
+        :return: ``True`` si ``HIDE_INPUTS`` o ``HIDE_OUTPUTS`` vale ``redact``
+        :rtype: bool
+        """
+        return "redact" in (self.inputs_privacy, self.outputs_privacy)
+
+
+@dataclass(frozen=True)
+class ResilienceSettings:
+    """Reintentos, backoff y circuit breaker del modelo real (ADR 0018).
+
+    :param connect_timeout_seconds: Tiempo máximo para conectar con el gateway
+    :type connect_timeout_seconds: float
+    :param max_retries: Reintentos de una llamada con falla transitoria
+    :type max_retries: int
+    :param backoff_seconds: Espera base; se duplica en cada reintento, con jitter
+    :type backoff_seconds: float
+    :param failure_threshold: Llamadas fallidas seguidas que abren el circuito
+    :type failure_threshold: int
+    :param open_seconds: Tiempo abierto antes de la llamada de prueba
+    :type open_seconds: float
+    """
+
+    connect_timeout_seconds: float = 5.0
+    max_retries: int = 2
+    backoff_seconds: float = 0.5
+    failure_threshold: int = 5
+    open_seconds: float = 30.0
 
 
 @dataclass(frozen=True)
@@ -99,6 +169,7 @@ class GatewaySettings:
     api_token: str = field(repr=False)
     cache_ttl_seconds: int = 0
     timeout_seconds: float = 30.0
+    resilience: ResilienceSettings = field(default_factory=ResilienceSettings)
 
 
 @dataclass(frozen=True)
@@ -157,11 +228,21 @@ class SecuritySettings:
     :type api_keys: tuple[tuple[str, str], ...]
     :param rate_limit_per_minute: Peticiones a ``/ask`` por cliente por minuto
     :type rate_limit_per_minute: int
+    :param auth_failures_per_minute: Claves fallidas por origen por minuto antes de
+        responder ``429`` sin comparar la clave
+    :type auth_failures_per_minute: int
+    :param trusted_proxy_hops: Proxies de confianza delante de la aplicación (Render: 1)
+    :type trusted_proxy_hops: int
+    :param daily_budget_usd: Presupuesto de costo por cliente por día UTC; 0 lo apaga
+    :type daily_budget_usd: float
     """
 
     environment: str
     api_keys: tuple[tuple[str, str], ...] = field(repr=False)
     rate_limit_per_minute: int = 30
+    auth_failures_per_minute: int = 10
+    trusted_proxy_hops: int = 0
+    daily_budget_usd: float = 1.0
 
     @property
     def clients(self) -> tuple[str, ...]:
@@ -174,13 +255,35 @@ class SecuritySettings:
 
 
 @dataclass(frozen=True)
+class LimitSettings:
+    """Topes de lo que entra y sale de ``POST /ask`` (ADR 0013).
+
+    :param question_chars: Largo máximo de la pregunta y de cada mensaje ``user`` del
+        historial
+    :type question_chars: int
+    :param history_messages: Mensajes del historial que acepta ``POST /ask``
+    :type history_messages: int
+    :param answer_chars: Largo máximo de la respuesta y de cada mensaje ``assistant``
+        del historial
+    :type answer_chars: int
+    :param body_bytes: Tamaño máximo del cuerpo de una petición, en bytes
+    :type body_bytes: int
+    """
+
+    question_chars: int
+    history_messages: int
+    answer_chars: int
+    body_bytes: int
+
+
+@dataclass(frozen=True)
 class Settings:
     """Configuración validada del producto.
 
     :param agent_max_steps: Tope de vueltas del bucle del agente
     :type agent_max_steps: int
-    :param max_question_chars: Largo máximo de la pregunta
-    :type max_question_chars: int
+    :param limits: Topes de la pregunta, el historial, la respuesta y el cuerpo
+    :type limits: LimitSettings
     :param employees_path: Ruta absoluta del archivo de empleados
     :type employees_path: pathlib.Path
     :param observability: Configuración del log, las métricas y las trazas
@@ -194,7 +297,7 @@ class Settings:
     """
 
     agent_max_steps: int
-    max_question_chars: int
+    limits: LimitSettings
     employees_path: Path
     observability: ObservabilitySettings
     models: ModelSettings
@@ -274,6 +377,23 @@ def _boolean(env: Mapping[str, str], name: str) -> bool:
     return BOOLEANS[raw.lower()]
 
 
+def _trace_privacy(env: Mapping[str, str], name: str) -> str:
+    """Lee ``HIDE_INPUTS`` o ``HIDE_OUTPUTS``: ``true``, ``redact`` o ``false``.
+
+    :param env: Variables de entorno
+    :type env: Mapping[str, str]
+    :param name: Nombre de la variable
+    :type name: str
+    :return: ``hide``, ``redact`` o ``clear``
+    :rtype: str
+    :raises ConfigError: Si no es ninguno de los tres valores
+    """
+    raw = _raw(env, name)
+    if raw.lower() not in TRACE_PRIVACY:
+        raise ConfigError(f"{name} must be true, redact or false, got {raw!r}")
+    return TRACE_PRIVACY[raw.lower()]
+
+
 def _path(env: Mapping[str, str], name: str) -> Path:
     """Ruta de la variable; si es relativa, se toma desde la raíz del producto."""
     path = Path(_raw(env, name))
@@ -288,8 +408,8 @@ def _observability(env: Mapping[str, str]) -> ObservabilitySettings:
         service_name=_raw(env, "SERVICE_NAME") or DEFAULTS["SERVICE_NAME"],
         slo_p95_ms=_integer(env, "SLO_P95_MS", 1),
         tracing_enabled=requested and has_key,
-        hide_inputs=_boolean(env, "HIDE_INPUTS"),
-        hide_outputs=_boolean(env, "HIDE_OUTPUTS"),
+        inputs_privacy=_trace_privacy(env, "HIDE_INPUTS"),
+        outputs_privacy=_trace_privacy(env, "HIDE_OUTPUTS"),
         tracing_requested=requested,
     )
 
@@ -308,9 +428,51 @@ def _gateway(env: Mapping[str, str], provider: str) -> GatewaySettings:
         account_id=values["CF_ACCOUNT_ID"],
         gateway_id=values["CF_GATEWAY_ID"],
         api_token=values["CF_API_TOKEN"],
-        cache_ttl_seconds=_integer(env, "CACHE_TTL_SECONDS", 0),
+        cache_ttl_seconds=_cache_ttl(env),
         timeout_seconds=_number(
             env, "MODEL_TIMEOUT_SECONDS", lambda value: value > 0, "a number > 0"
+        ),
+        resilience=_resilience(env),
+    )
+
+
+def _cache_ttl(env: Mapping[str, str]) -> int:
+    """TTL de la caché del gateway: 0 la salta; si no, el mínimo de AI Gateway.
+
+    :param env: Variables de entorno
+    :type env: Mapping[str, str]
+    :return: Segundos que el gateway guarda una respuesta (0: sin caché)
+    :rtype: int
+    :raises ConfigError: Si es negativa o está entre 1 y 59 segundos
+    """
+    value = _integer(env, "CACHE_TTL_SECONDS", 0)
+    if 0 < value < MIN_CACHE_TTL_SECONDS:
+        raise ConfigError(
+            "CACHE_TTL_SECONDS must be 0 (no cache) or an integer >= "
+            f"{MIN_CACHE_TTL_SECONDS}, got {value}"
+        )
+    return value
+
+
+def _resilience(env: Mapping[str, str]) -> ResilienceSettings:
+    """Reintentos y circuit breaker; ver :class:`ResilienceSettings`."""
+    return ResilienceSettings(
+        connect_timeout_seconds=_number(
+            env,
+            "MODEL_CONNECT_TIMEOUT_SECONDS",
+            lambda value: value > 0,
+            "a number > 0",
+        ),
+        max_retries=_integer(env, "MODEL_MAX_RETRIES", 0),
+        backoff_seconds=_number(
+            env,
+            "MODEL_RETRY_BACKOFF_SECONDS",
+            lambda value: value >= 0,
+            "a number >= 0",
+        ),
+        failure_threshold=_integer(env, "CIRCUIT_FAILURE_THRESHOLD", 1),
+        open_seconds=_number(
+            env, "CIRCUIT_OPEN_SECONDS", lambda value: value > 0, "a number > 0"
         ),
     )
 
@@ -383,6 +545,21 @@ def _security(env: Mapping[str, str]) -> SecuritySettings:
         environment=environment,
         api_keys=parse_api_keys(env.get("API_KEYS", DEFAULTS["API_KEYS"])),
         rate_limit_per_minute=_integer(env, "RATE_LIMIT_PER_MINUTE", 1),
+        auth_failures_per_minute=_integer(env, "AUTH_FAILURES_PER_MINUTE", 1),
+        trusted_proxy_hops=_integer(env, "TRUSTED_PROXY_HOPS", 0),
+        daily_budget_usd=_number(
+            env, "CLIENT_DAILY_BUDGET_USD", lambda value: value >= 0, "a number >= 0"
+        ),
+    )
+
+
+def _limits(env: Mapping[str, str]) -> LimitSettings:
+    """Topes de entradas y salidas; ver :class:`LimitSettings`."""
+    return LimitSettings(
+        question_chars=_integer(env, "MAX_QUESTION_CHARS", 1),
+        history_messages=_integer(env, "MAX_HISTORY_MESSAGES", 0),
+        answer_chars=_integer(env, "MAX_ANSWER_CHARS", MIN_ANSWER_CHARS),
+        body_bytes=_integer(env, "MAX_BODY_BYTES", MIN_BODY_BYTES),
     )
 
 
@@ -402,7 +579,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         raise ConfigError(f"MODEL_PROVIDER must be one of: {allowed}; got {provider!r}")
     return Settings(
         agent_max_steps=_integer(env, "AGENT_MAX_STEPS", 1),
-        max_question_chars=_integer(env, "MAX_QUESTION_CHARS", 1),
+        limits=_limits(env),
         employees_path=_path(env, "EMPLOYEES_PATH"),
         observability=_observability(env),
         models=_models(env, provider),

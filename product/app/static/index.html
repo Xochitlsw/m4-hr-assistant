@@ -106,6 +106,9 @@
     // La clave solo vive en sessionStorage (se borra al cerrar la pestaña) y viaja en
     // el encabezado X-API-Key; nunca se escribe en el código de la página.
     const KEY_STORAGE = "hr-assistant.api-key";
+    // La API acepta hasta MAX_HISTORY_MESSAGES mensajes de historial (20 por omisión):
+    // la página manda solo los últimos 20 y olvida los más viejos.
+    const MAX_HISTORY = 20;
     const history = [];
     const form = document.getElementById("ask-form");
     const question = document.querySelector('[data-testid="question"]');
@@ -157,16 +160,35 @@
       conversation.scrollTop = conversation.scrollHeight;
     }
 
-    function errorText(status, retryAfter) {
+    function errorText(status, retryAfter, detail) {
       if (status === 401) {
         return "Clave inválida. Revisa la clave de acceso.";
+      }
+      if (status === 429 && String(detail).includes("budget")) {
+        return "Se agotó el presupuesto de hoy para esta clave. Vuelve a intentar mañana.";
+      }
+      if (status === 429 && String(detail).includes("authentication")) {
+        return "Demasiados intentos con una clave inválida; espera "
+          + (retryAfter || "unos") + " segundos.";
       }
       if (status === 429) {
         return "Demasiadas preguntas; espera " + (retryAfter || "unos") + " segundos.";
       }
       if (status === 422) {
-        return "La pregunta está vacía o es demasiado larga. "
-          + "Revísala e intenta de nuevo.";
+        return "La pregunta está vacía, es demasiado larga o tiene caracteres no "
+          + "permitidos. Revísala e intenta de nuevo.";
+      }
+      if (status === 400 && String(detail).includes("injection")) {
+        return "Tu pregunta parece una instrucción para el asistente, no una consulta. "
+          + "Pregunta por un empleado o un departamento.";
+      }
+      if (status === 400) {
+        return "Tu pregunta parece incluir una clave o un secreto. Quítalo y vuelve a "
+          + "preguntar; si era real, cámbialo cuanto antes.";
+      }
+      if (status === 413) {
+        return "La conversación es demasiado larga. Recarga la página para empezar "
+          + "de nuevo.";
       }
       return "No pude obtener una respuesta. Intenta de nuevo en un momento.";
     }
@@ -192,7 +214,13 @@
         if (!response.ok) {
           const supportId = response.headers.get("X-Request-ID");
           const retryAfter = response.headers.get("Retry-After");
-          const message = errorText(response.status, retryAfter);
+          let detail = "";
+          try {
+            detail = (await response.json()).detail || "";
+          } catch (error) {
+            // Sin cuerpo JSON el mensaje depende solo del código.
+          }
+          const message = errorText(response.status, retryAfter, detail);
           addMessage("error", message, null, supportId);
           return;
         }
@@ -200,6 +228,9 @@
         addMessage("assistant", data.answer, data.tools_used, data.request_id);
         history.push({ role: "user", content: text });
         history.push({ role: "assistant", content: data.answer });
+        if (history.length > MAX_HISTORY) {
+          history.splice(0, history.length - MAX_HISTORY);
+        }
       } catch (error) {
         addMessage("error", errorText(0));
       } finally {

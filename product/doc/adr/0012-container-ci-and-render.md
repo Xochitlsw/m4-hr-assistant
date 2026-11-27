@@ -46,3 +46,10 @@ condicionado a los checks del repositorio.
   de ejecución y de desarrollo achicaría la imagen.
 - En un repositorio donde `product/` es una subcarpeta, GitHub solo lee `.github/workflows/` de la raíz y el
   Blueprint debe indicar `rootDir: product`; mover ambos es necesario antes de publicar desde ese repositorio.
+
+## Actualización (2026-11-26)
+
+El ADR 0015 mueve el CI a `.github/workflows/ci.yml` y el Blueprint a `render.yaml` en la raíz del repositorio
+(`working-directory: product` y `rootDir: product`). También separa las dependencias de ejecución y de desarrollo
+en locks con hashes (la imagen ya no instala las librerías de prueba) y agrega los trabajos `factory` y
+`security`.

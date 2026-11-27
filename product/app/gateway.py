@@ -2,11 +2,15 @@
 
 Usa un ``httpx.Client`` inyectado (las pruebas pasan uno con ``MockTransport`` y nunca
 salen a la red). Cualquier falla se convierte en :class:`ModelUnavailable`, que la API
-responde con ``502``. El token nunca aparece en los mensajes de error.
+responde con ``502``; la falla dice si es transitoria (red, ``429``, ``5xx``) y cuánto
+pide esperar el gateway, para que ``app.resilience`` decida si reintenta (ADR 0018). El
+token nunca aparece en los mensajes de error.
 """
 
+import hashlib
 import json
 import re
+from contextvars import ContextVar
 
 import httpx
 
@@ -15,12 +19,48 @@ from app.llm import Completion
 
 GATEWAY_BASE_URL = "https://gateway.ai.cloudflare.com/v1"
 CACHE_TTL_HEADER = "cf-aig-cache-ttl"
+CACHE_KEY_HEADER = "cf-aig-cache-key"
+CACHE_SKIP_HEADER = "cf-aig-skip-cache"
 CACHE_STATUS_HEADER = "cf-aig-cache-status"
+METADATA_HEADER = "cf-aig-metadata"
+GATEWAY_AUTH_HEADER = "cf-aig-authorization"
+# Id de la petición en curso; AskService lo fija y el gateway lo manda en los metadatos
+# del AI Gateway, para buscar la llamada en sus registros por el mismo request_id.
+CURRENT_REQUEST_ID: ContextVar[str | None] = ContextVar("request_id", default=None)
 FENCED_BLOCK = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
 
 class ModelUnavailable(RuntimeError):
-    """El modelo real no respondió o respondió algo que no se puede usar."""
+    """El modelo real no respondió o respondió algo que no se puede usar.
+
+    :param message: Qué falló, sin el token ni el texto de la conversación
+    :type message: str
+    :param retryable: ``True`` si la falla es transitoria y vale la pena reintentar
+    :type retryable: bool
+    :param retry_after: Segundos que pidió esperar el gateway (``Retry-After``)
+    :type retry_after: float | None
+    """
+
+    def __init__(
+        self, message: str, retryable: bool = False, retry_after: float | None = None
+    ):
+        super().__init__(message)
+        self.retryable = retryable
+        self.retry_after = retry_after
+
+
+def retry_after_seconds(response: httpx.Response) -> float | None:
+    """Segundos de ``Retry-After`` si vienen como número; si no, ``None``.
+
+    :param response: Respuesta del gateway
+    :type response: httpx.Response
+    :return: Segundos a esperar, o ``None``
+    :rtype: float | None
+    """
+    try:
+        return max(0.0, float(response.headers.get("Retry-After", "")))
+    except ValueError:
+        return None
 
 
 def gateway_url(settings: ModelSettings) -> str:
@@ -38,15 +78,34 @@ def gateway_url(settings: ModelSettings) -> str:
     )
 
 
+def cache_key(body: dict) -> str:
+    """Clave de la caché del gateway: SHA-256 del cuerpo en JSON canónico.
+
+    No lleva el token ni el ``request_id``; el texto ya llega redactado (ADR 0013).
+
+    :param body: Cuerpo de la petición al modelo
+    :type body: dict
+    :return: 64 caracteres hexadecimales
+    :rtype: str
+    """
+    canonical = json.dumps(body, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def build_http_client(settings: ModelSettings) -> httpx.Client:
-    """Crea el cliente HTTP del modelo real, con el timeout configurado.
+    """Crea el cliente HTTP del modelo real, con sus timeouts.
+
+    La conexión tiene un tiempo corto aparte (``MODEL_CONNECT_TIMEOUT_SECONDS``): si el
+    gateway no acepta la conexión, se sabe pronto y se puede reintentar.
 
     :param settings: Configuración de modelos
     :type settings: app.config.ModelSettings
     :return: Un cliente que se comparte entre hilos y se cierra al apagar
     :rtype: httpx.Client
     """
-    return httpx.Client(timeout=settings.gateway.timeout_seconds)
+    gateway = settings.gateway
+    connect = min(gateway.resilience.connect_timeout_seconds, gateway.timeout_seconds)
+    return httpx.Client(timeout=httpx.Timeout(gateway.timeout_seconds, connect=connect))
 
 
 def _first_json_object(text: str) -> dict | None:
@@ -101,12 +160,33 @@ class GatewayModel:
         self._client = client
         self._url = gateway_url(settings)
 
-    def _headers(self) -> dict:
-        """Autorización y, si la caché está encendida, su TTL (palanca 4)."""
+    def _headers(self, body: dict) -> dict:
+        """Autorización, caché del gateway (palanca 4) y el ``request_id`` en curso.
+
+        El token va dos veces: ``Authorization`` para Workers AI y
+        ``cf-aig-authorization`` para el propio gateway, que exige su autenticación
+        (ADR 0008). Ninguna de las dos se registra.
+
+        Con ``CACHE_TTL_SECONDS`` > 0 se manda la TTL y una clave de caché que es el
+        hash del cuerpo (modelo, mensajes y parámetros): dos peticiones iguales
+        comparten la respuesta aunque cada una lleve su ``request_id`` en los
+        metadatos. Con 0, la caché se salta aunque el gateway la tenga encendida en
+        su panel (ADR 0022).
+
+        :param body: Cuerpo de la petición al modelo
+        :type body: dict
+        """
         gateway = self._settings.gateway
-        headers = {"Authorization": f"Bearer {gateway.api_token}"}
+        bearer = f"Bearer {gateway.api_token}"
+        headers = {"Authorization": bearer, GATEWAY_AUTH_HEADER: bearer}
         if gateway.cache_ttl_seconds > 0:
             headers[CACHE_TTL_HEADER] = str(gateway.cache_ttl_seconds)
+            headers[CACHE_KEY_HEADER] = cache_key(body)
+        else:
+            headers[CACHE_SKIP_HEADER] = "true"
+        request_id = CURRENT_REQUEST_ID.get()
+        if request_id is not None:
+            headers[METADATA_HEADER] = json.dumps({"request_id": request_id})
         return headers
 
     def complete(self, messages: list[dict]) -> Completion:
@@ -125,8 +205,22 @@ class GatewayModel:
             "temperature": self._settings.temperature,
         }
         try:
-            response = self._client.post(self._url, json=body, headers=self._headers())
-            response.raise_for_status()
+            response = self._client.post(
+                self._url, json=body, headers=self._headers(body)
+            )
+        except httpx.TransportError as error:
+            raise ModelUnavailable(
+                f"gateway call failed for {self.name}: {type(error).__name__}",
+                retryable=True,
+            ) from error
+        if response.is_error:
+            status = response.status_code
+            raise ModelUnavailable(
+                f"gateway call failed for {self.name}: HTTP {status}",
+                retryable=status == 429 or status >= 500,
+                retry_after=retry_after_seconds(response),
+            )
+        try:
             data = response.json()
             content = data["choices"][0]["message"]["content"]
             usage = data["usage"]

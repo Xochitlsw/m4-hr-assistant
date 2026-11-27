@@ -1,0 +1,42 @@
+# scripts/security_check.py contra el producto local (2026-11-26)
+# uvicorn con MODEL_PROVIDER=fake, valores por omisión de los límites y una clave de
+# ejemplo (no es un secreto). Código de salida de la comprobación: 0
+
+  [OK] Cabeceras de seguridad en /health -> 200 (esperado 200)
+  [OK] POST /ask sin clave -> 401 (esperado 401)
+  [OK] POST /ask con una clave equivocada -> 401 (esperado 401)
+  [OK] Pregunta normal -> 200 (esperado 200)
+  [OK] Dato personal sintético (CURP): se redacta y se responde -> 200 (esperado 200)
+  [OK] Secreto con forma de token: se bloquea -> 400 (esperado 400)
+  [OK] Prompt injection: se bloquea -> 400 (esperado 400)
+  [OK] Historial con un turno assistant falsificado: se bloquea -> 400 (esperado 400)
+  [OK] Caracteres de control en la pregunta -> 422 (esperado 422)
+  [OK] Pregunta de 2001 caracteres -> 422 (esperado 422)
+  [OK] Historial de 21 mensajes -> 422 (esperado 422)
+  [OK] Cuerpo de 70 KB, sin clave: se rechaza antes de leerlo -> 413 (esperado 413)
+  [OK] Origen bloqueado tras varias claves equivocadas -> 429 (esperado 429)
+13 de 13 casos como se esperaba
+
+# Líneas de auditoría que dejó la corrida (sin texto ni claves; el origen va como huella HMAC, nunca la IP):
+{"ts": "2026-11-26T17:51:44.778578+00:00", "service": "hr-assistant", "event": "audit", "request_id": null, "action": "startup", "environment": "development", "model_provider": "fake", "models": {"small": "@cf/meta/llama-3.1-8b-instruct-fast", "large": "@cf/meta/llama-3.3-70b-instruct-fp8-fast"}, "clients": ["local"], "rate_limit_per_minute": 30, "auth_failures_per_minute": 10, "trusted_proxy_hops": 0, "daily_budget_usd": 1.0, "agent_max_steps": 3, "limits": {"question_chars": 2000, "history_messages": 20, "answer_chars": 2000, "body_bytes": 65536}, "tracing_enabled": false, "trace_privacy": {"inputs": "hide", "outputs": "hide"}}
+{"ts": "2026-11-26T17:51:47.749855+00:00", "service": "hr-assistant", "event": "audit", "request_id": "b3c17415-3d9b-4589-a18b-963ff9d1557d", "action": "auth_failed", "reason": "missing", "path": "/ask", "origin": "dc640a8ab5266536"}
+{"ts": "2026-11-26T17:51:47.757854+00:00", "service": "hr-assistant", "event": "audit", "request_id": "d1cd9f5c-2cac-4b9a-bcff-d4e73ef9b1a6", "action": "auth_failed", "reason": "invalid", "path": "/ask", "origin": "dc640a8ab5266536"}
+{"ts": "2026-11-26T17:51:47.782892+00:00", "service": "hr-assistant", "event": "audit", "request_id": "2258472b-f0c4-4a58-89bb-3a1e724de540", "action": "tool_call", "client": "local", "tool": "get_employee", "args": {"employee_id": "EMP-0004"}}
+{"ts": "2026-11-26T17:51:47.794695+00:00", "service": "hr-assistant", "event": "audit", "request_id": "0acea12b-b156-4f8c-90b2-65f4fab7ac30", "action": "pii_detected", "client": "local", "location": "question", "types": {"CURP": 1}}
+{"ts": "2026-11-26T17:51:47.796698+00:00", "service": "hr-assistant", "event": "audit", "request_id": "0acea12b-b156-4f8c-90b2-65f4fab7ac30", "action": "tool_call", "client": "local", "tool": "get_employee", "args": {"employee_id": "EMP-0004"}}
+{"ts": "2026-11-26T17:51:47.809080+00:00", "service": "hr-assistant", "event": "audit", "request_id": "44b4c38f-e081-4d8a-8e54-2e5dd8edcebc", "action": "secret_blocked", "client": "local", "location": "question", "types": {"GITHUB_TOKEN": 1}}
+{"ts": "2026-11-26T17:51:47.818728+00:00", "service": "hr-assistant", "event": "audit", "request_id": "e9cd28b0-874f-4381-9ef8-85e9112209fd", "action": "injection_blocked", "client": "local", "location": "question", "rules": ["override", "reveal"]}
+{"ts": "2026-11-26T17:51:47.826523+00:00", "service": "hr-assistant", "event": "audit", "request_id": "e0882975-448f-40dd-b4db-eb392c4d2757", "action": "injection_blocked", "client": "local", "location": "history", "rules": ["protocol"]}
+{"ts": "2026-11-26T17:51:47.838165+00:00", "service": "hr-assistant", "event": "audit", "request_id": "ef126322-d06e-4e43-8f4b-e93d3f5c5cc2", "action": "request_rejected", "client": "local", "reason": "invalid_input", "path": "/ask"}
+{"ts": "2026-11-26T17:51:47.838165+00:00", "service": "hr-assistant", "event": "audit", "request_id": "9cbc41d7-66db-4929-8a73-50009dcfef38", "action": "request_rejected", "client": "local", "reason": "invalid_input", "path": "/ask"}
+{"ts": "2026-11-26T17:51:47.856792+00:00", "service": "hr-assistant", "event": "audit", "request_id": "940f49c7-9846-431d-ae12-5522c64591b7", "action": "request_rejected", "client": "local", "reason": "invalid_input", "path": "/ask"}
+{"ts": "2026-11-26T17:51:47.862467+00:00", "service": "hr-assistant", "event": "audit", "request_id": "466cc70d-d107-4751-8f77-13e3b078eed5", "action": "request_rejected", "client": null, "reason": "body_too_large", "path": "/ask"}
+{"ts": "2026-11-26T17:51:47.869777+00:00", "service": "hr-assistant", "event": "audit", "request_id": "dd64fe0f-cd1e-40ac-9a1f-1af22b43201b", "action": "auth_failed", "reason": "invalid", "path": "/ask", "origin": "dc640a8ab5266536"}
+{"ts": "2026-11-26T17:51:47.878752+00:00", "service": "hr-assistant", "event": "audit", "request_id": "30cebd88-bd8b-440a-9b39-c029b0e45e25", "action": "auth_failed", "reason": "invalid", "path": "/ask", "origin": "dc640a8ab5266536"}
+{"ts": "2026-11-26T17:51:47.888425+00:00", "service": "hr-assistant", "event": "audit", "request_id": "42337e5e-5be8-4e26-b079-1f1d80c5810c", "action": "auth_failed", "reason": "invalid", "path": "/ask", "origin": "dc640a8ab5266536"}
+{"ts": "2026-11-26T17:51:47.896673+00:00", "service": "hr-assistant", "event": "audit", "request_id": "9d0a6142-5f55-4f03-9430-71c4d061d9fb", "action": "auth_failed", "reason": "invalid", "path": "/ask", "origin": "dc640a8ab5266536"}
+{"ts": "2026-11-26T17:51:47.903113+00:00", "service": "hr-assistant", "event": "audit", "request_id": "d01522aa-bb19-47bf-8b7a-3963f0d5b040", "action": "auth_failed", "reason": "invalid", "path": "/ask", "origin": "dc640a8ab5266536"}
+{"ts": "2026-11-26T17:51:47.903113+00:00", "service": "hr-assistant", "event": "audit", "request_id": "e10bb10c-9f4c-4462-ab5e-813277176ec8", "action": "auth_failed", "reason": "invalid", "path": "/ask", "origin": "dc640a8ab5266536"}
+{"ts": "2026-11-26T17:51:47.922510+00:00", "service": "hr-assistant", "event": "audit", "request_id": "425976c1-dfe4-423d-a951-c30fdbb31d0f", "action": "auth_failed", "reason": "invalid", "path": "/ask", "origin": "dc640a8ab5266536"}
+{"ts": "2026-11-26T17:51:47.930595+00:00", "service": "hr-assistant", "event": "audit", "request_id": "08b0a53b-7c5b-41a3-bbd5-ee546ba14473", "action": "auth_failed", "reason": "invalid", "path": "/ask", "origin": "dc640a8ab5266536"}
+{"ts": "2026-11-26T17:51:47.939395+00:00", "service": "hr-assistant", "event": "audit", "request_id": "be6aceca-4599-41bf-8e68-1263fb1242bc", "action": "auth_throttled", "origin": "dc640a8ab5266536", "path": "/ask", "retry_after": 60}

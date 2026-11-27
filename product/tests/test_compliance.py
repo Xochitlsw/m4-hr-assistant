@@ -25,6 +25,19 @@ def test_production_refuses_unsafe_settings():
             "LANGSMITH_TRACING": "true",
             "HIDE_OUTPUTS": "false",
         },
+        "MAX_BODY_BYTES must be at most 1048576": {"MAX_BODY_BYTES": "2000000"},
+        "CLIENT_DAILY_BUDGET_USD must be greater than 0": {
+            "CLIENT_DAILY_BUDGET_USD": "0"
+        },
+        "MAX_HISTORY_MESSAGES must be at most 50": {"MAX_HISTORY_MESSAGES": "51"},
+        "AGENT_MAX_STEPS must be at most 5": {"AGENT_MAX_STEPS": "6"},
+        "MODEL_MAX_TOKENS must be at most 1024": {"MODEL_MAX_TOKENS": "4096"},
+        "CACHE_TTL_SECONDS must be at most 900": {"CACHE_TTL_SECONDS": "3600"},
+        "must be true (hide) or redact, never false": {
+            "LANGSMITH_TRACING": "true",
+            "HIDE_INPUTS": "redact",
+            "HIDE_OUTPUTS": "false",
+        },
     }
     for rule, change in unsafe.items():
         settings = load_settings({**SAFE_PRODUCTION, **change})
@@ -34,6 +47,19 @@ def test_production_refuses_unsafe_settings():
         assert message.startswith("ENVIRONMENT=production refuses to start: ")
         assert rule in message
         assert "short-secret" not in message
+
+
+@pytest.mark.parametrize(
+    "inputs, outputs", [("true", "true"), ("redact", "redact"), ("true", "redact")]
+)
+def test_production_traces_may_be_hidden_or_redacted(inputs, outputs):
+    traced = {
+        **SAFE_PRODUCTION,
+        "LANGSMITH_TRACING": "true",
+        "HIDE_INPUTS": inputs,
+        "HIDE_OUTPUTS": outputs,
+    }
+    assert not compliance.violations(load_settings(traced))
 
 
 def test_a_safe_production_and_any_development_setup_start():

@@ -1,5 +1,8 @@
 # Secretos y archivos locales que nunca van al repositorio del producto.
 .env
+# Cualquier variante (.env.local, .env.production, ...) salvo la plantilla sin valores.
+.env.*
+!.env.example
 .venv/
 __pycache__/
 *.pyc

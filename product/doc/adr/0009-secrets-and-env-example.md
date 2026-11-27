@@ -23,3 +23,17 @@ en el repositorio, el log o un mensaje de error permite gastar la cuenta de otra
 - Revisar que un secreto no se filtre es comprobar el log, los errores y el `git status`, no confiar en la memoria
   de nadie; el escaneo automático de secretos queda para el CI del reto.
 - Rotar un token no requiere cambiar código, solo el entorno.
+
+## Actualización (2026-11-26): ninguna clave en la línea de comandos
+
+Una clave escrita en un comando (`VARIABLE='valor' comando` o una asignación con `$env:`) queda en el historial de
+la consola; PowerShell lo guarda en texto plano en disco. Por eso:
+
+- Los ejemplos arrancan el producto con `uv run --env-file .env ...` y leen la clave de la prueba de humo sin eco
+  (`Read-Host -AsSecureString` en PowerShell, `read -rs` en Bash), borrándola de la sesión al terminar.
+- `scripts/smoke.py` solo acepta la clave en `SMOKE_API_KEY`, que también lista `.env.example` (vacía); rechaza un
+  argumento de más y su mensaje de uso no muestra una clave en el comando.
+- `.gitignore` ignora `.env` y cualquier `.env.*`, salvo `.env.example`.
+- `tests/test_secrets.py` lo vuelve regla: los secretos de la plantilla siguen vacíos y ningún README, documento o
+  mensaje de la prueba de humo pone una clave dentro de un comando. Sus fallas nombran variables y líneas, nunca
+  un valor.

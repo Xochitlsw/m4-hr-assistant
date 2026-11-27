@@ -34,3 +34,19 @@ palancas de costo se deben poder medir con los dos modelos.
 - El adaptador tolerante puede convertir en respuesta un texto que debió ser una herramienta; la calidad real se
   mide con la muestra del modelo real.
 - Sin reintentos ni circuit breaker todavía: una falla del proveedor llega a la persona como un `502` claro.
+
+## Actualización (2026-11-26): gateway autenticado, permisos del token y caché
+
+- El AI Gateway exige su propia autenticación («Authenticated Gateway»), y en los gateways nuevos no se puede
+  apagar: sin ella responde `401` (código 2009). El producto manda el mismo `CF_API_TOKEN` en dos cabeceras:
+  `Authorization` para Workers AI y `cf-aig-authorization` para el gateway. Ninguna se registra; las pruebas
+  comprueban que el token no aparece en el log, en las trazas ni en los errores (`tests/test_gateway.py`,
+  `tests/test_tracing.py`).
+- Permisos del token, los mínimos que funcionan: **Workers AI: Read y Edit** y **AI Gateway: Run**. Puede correr
+  modelos de Workers AI y hacer inferencia por los gateways de la cuenta; no puede ver ni cambiar la configuración
+  de los gateways ni leer sus registros.
+- La caché del gateway solo responde a llamadas autenticadas. Con eso, la razón que la dejaba apagada no aplica: en
+  producción se enciende con una TTL corta (`CACHE_TTL_SECONDS=300`). La decisión, su evidencia y su trade-off
+  (respuestas de hasta 5 minutos de antigüedad frente a costo y latencia) están en el ADR 0022.
+- Reintentos, circuit breaker y fallback, que este ADR dejaba pendientes, están en el ADR 0018. Las llamadas
+  llevan el `request_id` en `cf-aig-metadata` (ADR 0021).

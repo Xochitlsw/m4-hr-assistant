@@ -14,6 +14,9 @@ tests/
 e2e/
 doc/
 scripts/
+# Solo entra requirements.txt (dependencias de ejecución).
+requirements-dev.txt
+requirements*.in
 render.yaml
 Dockerfile
 .dockerignore

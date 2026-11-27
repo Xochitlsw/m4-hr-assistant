@@ -1,0 +1,4 @@
+﻿  [OK] GET /health -> 200 (esperado 200)
+  [OK] POST /ask sin clave -> 401 (esperado 401)
+  [OK] POST /ask con clave -> 200 (esperado 200)
+[OK] production

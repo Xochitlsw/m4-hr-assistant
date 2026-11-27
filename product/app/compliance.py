@@ -1,4 +1,4 @@
-"""Compliance como código: reglas de producción (ADR 0011).
+"""Compliance como código: reglas de producción (ADR 0011; trazas, ADR 0014).
 
 Con ``ENVIRONMENT=production`` la aplicación no arranca si alguna regla falla. Cada
 regla está en :func:`violations` y su prueba en ``tests/test_compliance.py``; la
@@ -9,6 +9,19 @@ variables, nunca una clave.
 from app.config import ConfigError, Settings
 
 MIN_KEY_LENGTH = 16
+# Producción no puede quitar los topes de entrada, agencia y consumo (ADR 0016), ni
+# guardar respuestas en la caché del gateway más de 15 minutos (ADR 0022).
+CEILINGS = (
+    ("MAX_BODY_BYTES", 1_048_576, lambda settings: settings.limits.body_bytes),
+    ("MAX_HISTORY_MESSAGES", 50, lambda settings: settings.limits.history_messages),
+    ("AGENT_MAX_STEPS", 5, lambda settings: settings.agent_max_steps),
+    ("MODEL_MAX_TOKENS", 1024, lambda settings: settings.models.max_tokens),
+    (
+        "CACHE_TTL_SECONDS",
+        900,
+        lambda settings: settings.models.gateway.cache_ttl_seconds,
+    ),
+)
 
 
 def violations(settings: Settings) -> list[str]:
@@ -31,11 +44,17 @@ def violations(settings: Settings) -> list[str]:
                 f"API_KEYS key of client {client!r} must have at least "
                 f"{MIN_KEY_LENGTH} characters"
             )
+    for name, ceiling, read in CEILINGS:
+        if read(settings) > ceiling:
+            found.append(f"{name} must be at most {ceiling} in production")
+    if settings.security.daily_budget_usd <= 0:
+        found.append("CLIENT_DAILY_BUDGET_USD must be greater than 0 in production")
     observability = settings.observability
-    hidden = observability.hide_inputs and observability.hide_outputs
-    if observability.tracing_requested and not hidden:
+    modes = (observability.inputs_privacy, observability.outputs_privacy)
+    if observability.tracing_requested and "clear" in modes:
         found.append(
-            "HIDE_INPUTS and HIDE_OUTPUTS must be true when LANGSMITH_TRACING=true"
+            "HIDE_INPUTS and HIDE_OUTPUTS must be true (hide) or redact, never false, "
+            "when LANGSMITH_TRACING=true"
         )
     return found
 
